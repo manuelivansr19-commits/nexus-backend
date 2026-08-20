@@ -74,15 +74,16 @@ async def status():
 
 
 # ============================================================
-# CHAT NEXUS CON FALLBACK A OLLAMA
+# CHAT NEXUS CON FALLBACK A OLLAMA LOCAL
 # ============================================================
 
 @app.post("/api/nexus/chat")
 async def chat(request: ChatRequest):
 
     text = None
+    error_detail = ""
 
-    # 1. Intentar con Gemini
+    # 1. Intentar procesar con Gemini (si está configurado)
     if client is not None:
         try:
             response = client.models.generate_content(
@@ -97,12 +98,13 @@ async def chat(request: ChatRequest):
             if response and getattr(response, "text", None):
                 text = response.text.strip()
         except Exception as e:
-            print("⚠️ Aviso Gemini (Fallback a Ollama activado):", repr(e))
+            error_detail = str(e)
+            print("⚠️ Gemini agotado o con error, intentando respaldo con Ollama local:", repr(e))
 
-    # 2. Si Gemini falló o no hay tokens, usar Ollama local como respaldo
+    # 2. Si Gemini falló o dio error de cuota (429), usar Ollama como respaldo
     if not text:
         try:
-            ollama_url = "http://localhost:11434/api/generate"
+            ollama_url = os.getenv("OLLAMA_HOST", "http://localhost:11434/api/generate")
             payload = {
                 "model": "llama3",
                 "prompt": f"{request.system}\n\nUsuario: {request.message}\nNEXUS:",
@@ -114,12 +116,12 @@ async def chat(request: ChatRequest):
                     data = r.json()
                     text = data.get("response", "").strip()
         except Exception as oe:
-            print("⚠️ Error en respaldo Ollama:", repr(oe))
+            print("⚠️ Ollama local no disponible:", repr(oe))
 
     if not text:
         raise HTTPException(
             status_code=500,
-            detail="NEXUS no pudo procesar la solicitud con ningún motor disponible."
+            detail=f"NEXUS sin respuesta. Gemini error: {error_detail}"
         )
 
     return {
@@ -138,5 +140,5 @@ async def health():
     return {
         "status": "healthy",
         "system": "NEXUS"
-        }
+    }
     
