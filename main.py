@@ -268,11 +268,6 @@ async def call_gemini(
                 system_instruction=system_instruction,
                 max_output_tokens=MAX_OUTPUT_TOKENS,
                 temperature=0.6,
-                tools=[
-                    types.Tool(
-                        google_search=types.GoogleSearch()
-                    )
-                ],
             ),
         )
 
@@ -499,7 +494,7 @@ async def nexus_config():
         "max_output_tokens": (
             MAX_OUTPUT_TOKENS
         ),
-        "web_search": True,
+        "web_search": False,
     }
 
 
@@ -711,8 +706,6 @@ async def chat(
         "request_id": request_id,
     }
 
-    # Solo para diagnóstico del backend.
-    # No expone la API key.
     if gemini_error:
 
         detail["gemini_error"] = (
@@ -724,4 +717,5 @@ async def chat(
     raise HTTPException(
         status_code=503,
         detail=detail,
-    )
+)
+    
