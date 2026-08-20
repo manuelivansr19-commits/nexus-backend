@@ -33,14 +33,18 @@ async def status():
 @app.post("/api/nexus/chat")
 async def chat(request: ChatRequest):
     try:
+        config = types.GenerateContentConfig(
+            system_instruction=request.system,
+            max_output_tokens=300,
+            tools=[],
+        )
         response = client.models.generate_content(
             model="gemini-3.6-flash",
             contents=request.message,
-            config=types.GenerateContentConfig(
-                system_instruction=request.system,
-                max_output_tokens=300
-            )
+            config=config,
         )
         return {"response": response.text}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
