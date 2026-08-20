@@ -32,7 +32,8 @@ async def status():
 @app.post("/api/nexus/chat")
 async def chat(request: ChatRequest):
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent?key={API_KEY}"
+        # Usando el modelo estándar estable gemini-1.5-flash
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY}"
         payload = {
             "system_instruction": {"parts": [{"text": request.system}]},
             "contents": [{"parts": [{"text": request.message}]}],
@@ -41,14 +42,16 @@ async def chat(request: ChatRequest):
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(url, json=payload)
             data = r.json()
+            
         if "candidates" in data:
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             return {"response": text}
         else:
             print("Gemini error:", data)
-            raise HTTPException(status_code=500, detail=str(data))
+            raise HTTPException(status_code=500, detail=data.get("error", {}).get("message", str(data)))
     except HTTPException:
         raise
     except Exception as e:
         print("Error:", e)
         raise HTTPException(status_code=500, detail=str(e))
+        
