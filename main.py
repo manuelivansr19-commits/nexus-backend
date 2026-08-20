@@ -20,7 +20,7 @@ client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 class ChatRequest(BaseModel):
     message: str
-    system: str = "Eres NEXUS, un sistema de inteligencia personal avanzado."
+    system: str = "Eres NEXUS. Responde de forma corta, directa y precisa. Maximo 3 oraciones salvo que el usuario pida mas detalle."
 
 @app.get("/")
 async def home():
@@ -34,10 +34,11 @@ async def status():
 async def chat(request: ChatRequest):
     try:
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-2.5-flash",
             contents=request.message,
             config=types.GenerateContentConfig(
-                system_instruction=request.system
+                system_instruction=request.system,
+                max_output_tokens=300
             )
         )
         return {"response": response.text}
