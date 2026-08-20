@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -32,7 +32,7 @@ async def status():
 @app.post("/api/nexus/chat")
 async def chat(request: ChatRequest):
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={API_KEY}"
         payload = {
             "system_instruction": {"parts": [{"text": request.system}]},
             "contents": [{"parts": [{"text": request.message}]}],
