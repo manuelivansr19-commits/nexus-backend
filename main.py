@@ -80,7 +80,7 @@ REQUEST_TIMEOUT_SECONDS = float(
     )
 )
 
-APP_VERSION = "2.6.7"
+APP_VERSION = "2.6.8"
 
 
 # ============================================================
@@ -258,11 +258,12 @@ async def call_gemini(
         )
 
     start_time = time.perf_counter()
+    clean_model_name = GEMINI_MODEL.replace("models/", "").strip()
 
     try:
         response = (
             await gemini_client.aio.models.generate_content(
-                model=GEMINI_MODEL,
+                model=clean_model_name,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
@@ -281,7 +282,7 @@ async def call_gemini(
         logger.error(
             "Gemini ERROR | modelo=%s | duración=%.2fs "
             "| tipo=%s | error=%s",
-            GEMINI_MODEL,
+            clean_model_name,
             duration,
             type(error).__name__,
             safe_error_message(error),
@@ -311,7 +312,7 @@ async def call_gemini(
 
     logger.info(
         "Gemini exitoso | modelo=%s | duración=%.2fs",
-        GEMINI_MODEL,
+        clean_model_name,
         duration,
     )
 
@@ -624,5 +625,5 @@ async def chat(
             "fallback": True,
             "request_id": request_id,
         },
-)
-        
+    )
+    
