@@ -1,5 +1,4 @@
 from fastapi import FastAPI, HTTPException
-from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -16,7 +15,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_KEY = os.environ.get("GEMINI_API_KEY")
+# Puedes colocar tu API key directamente aquí si no usas variables de entorno en Windows
+API_KEY = os.environ.get("GEMINI_API_KEY", "TU_API_KEY_AQUI")
 
 class ChatRequest(BaseModel):
     message: str
@@ -33,6 +33,7 @@ async def status():
 @app.post("/api/nexus/chat")
 async def chat(request: ChatRequest):
     try:
+        # Usando el modelo estándar actual gemini-2.5-flash
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
         payload = {
             "system_instruction": {"parts": [{"text": request.system}]},
@@ -42,14 +43,16 @@ async def chat(request: ChatRequest):
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(url, json=payload)
             data = r.json()
+            
         if "candidates" in data:
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             return {"response": text}
         else:
             print("Gemini error:", data)
-            raise HTTPException(status_code=500, detail=str(data))
+            raise HTTPException(status_status=500, detail=str(data))
     except HTTPException:
         raise
     except Exception as e:
         print("Error:", e)
         raise HTTPException(status_code=500, detail=str(e))
+        
