@@ -88,7 +88,7 @@ async def chat(request: ChatRequest):
     try:
 
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-3.7-flash",
             contents=request.message,
             config=types.GenerateContentConfig(
                 system_instruction=request.system,
