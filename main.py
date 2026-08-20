@@ -2,7 +2,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-import httpx
+from google import genai
+from google.genai import types
 import os
 
 app = FastAPI()
@@ -15,7 +16,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_KEY = os.environ.get("GEMINI_API_KEY")
+# Inicializa el cliente oficial de Gemini (toma automáticamente la variable GEMINI_API_KEY del entorno)
+client = genai.Client()
 
 class ChatRequest(BaseModel):
     message: str
@@ -32,26 +34,17 @@ async def status():
 @app.post("/api/nexus/chat")
 async def chat(request: ChatRequest):
     try:
-        # Usando el modelo estándar estable gemini-1.5-flash
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY}"
-        payload = {
-            "system_instruction": {"parts": [{"text": request.system}]},
-            "contents": [{"parts": [{"text": request.message}]}],
-            "generationConfig": {"maxOutputTokens": 300}
-        }
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(url, json=payload)
-            data = r.json()
-            
-        if "candidates" in data:
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            return {"response": text}
-        else:
-            print("Gemini error:", data)
-            raise HTTPException(status_code=500, detail=data.get("error", {}).get("message", str(data)))
-    except HTTPException:
-        raise
+        # Petición utilizando el SDK oficial con soporte de system_instruction integrado
+        response = client.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=request.message,
+            config=types.GenerateContentConfig(
+                system_instruction=request.system,
+                max_output_tokens=300
+            )
+        )
+        return {"response": response.text}
     except Exception as e:
-        print("Error:", e)
+        print("Error en NEXUS:", e)
         raise HTTPException(status_code=500, detail=str(e))
         
