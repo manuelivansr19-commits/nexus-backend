@@ -74,16 +74,15 @@ async def status():
 
 
 # ============================================================
-# CHAT NEXUS CON FALLBACK A OLLAMA LOCAL
+# CHAT NEXUS CON FALLBACK A OLLAMA LOCAL BLINDADO
 # ============================================================
 
 @app.post("/api/nexus/chat")
 async def chat(request: ChatRequest):
 
     text = None
-    error_detail = ""
 
-    # 1. Intentar procesar con Gemini (si está configurado)
+    # 1. Intentar procesar con Gemini
     if client is not None:
         try:
             response = client.models.generate_content(
@@ -98,10 +97,9 @@ async def chat(request: ChatRequest):
             if response and getattr(response, "text", None):
                 text = response.text.strip()
         except Exception as e:
-            error_detail = str(e)
-            print("⚠️ Gemini agotado o con error, intentando respaldo con Ollama local:", repr(e))
+            print("⚠️ Gemini agotado (429/Error), saltando a Ollama local:", str(e))
 
-    # 2. Si Gemini falló o dio error de cuota (429), usar Ollama como respaldo
+    # 2. Respaldo obligatorio con Ollama si Gemini falló o no dio texto
     if not text:
         try:
             ollama_url = os.getenv("OLLAMA_HOST", "http://localhost:11434/api/generate")
@@ -121,7 +119,7 @@ async def chat(request: ChatRequest):
     if not text:
         raise HTTPException(
             status_code=500,
-            detail=f"NEXUS sin respuesta. Gemini error: {error_detail}"
+            detail="NEXUS no pudo procesar la solicitud: Límite de Gemini alcanzado y Ollama local inalcanzable."
         )
 
     return {
