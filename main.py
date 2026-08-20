@@ -14,8 +14,7 @@ from pydantic import BaseModel, Field
 
 
 # ============================================================
-# NEXUS AI 2.6.4
-# MOTOR DE RAZONAMIENTO
+# NEXUS AI 2.6.5
 # ============================================================
 
 logging.basicConfig(
@@ -27,7 +26,7 @@ logger = logging.getLogger("NEXUS-BACKEND")
 
 app = FastAPI(
     title="NEXUS AI",
-    version="2.6.4",
+    version="2.6.5",
 )
 
 
@@ -79,18 +78,6 @@ USE_OLLAMA_ONLY = (
         "false",
     ).lower()
     == "true"
-)
-
-
-# ============================================================
-# RAZONAMIENTO
-# ============================================================
-
-THINKING_BUDGET = int(
-    os.getenv(
-        "THINKING_BUDGET",
-        "4096",
-    )
 )
 
 MAX_OUTPUT_TOKENS = int(
@@ -165,35 +152,15 @@ class ChatRequest(BaseModel):
         default=(
             "Eres NEXUS, un sistema avanzado de "
             "inteligencia artificial personal. "
-            "\n\n"
-            "Tu función principal es ayudar al usuario "
-            "a pensar, analizar, investigar, comparar, "
-            "planear y tomar decisiones. "
-            "\n\n"
-            "Cuando la pregunta sea compleja debes "
-            "analizarla profundamente antes de responder. "
-            "Descompón el problema en variables, identifica "
-            "supuestos, riesgos, relaciones causa-efecto, "
-            "escenarios y consecuencias. "
-            "\n\n"
-            "No simplifiques una pregunta compleja solo "
-            "para responder rápido. "
-            "\n\n"
-            "Distingue claramente entre hechos, inferencias "
-            "y opiniones. No inventes datos. "
-            "\n\n"
-            "Si necesitas información actualizada y tienes "
-            "acceso a búsqueda web, utilízala. "
-            "\n\n"
+            "Estás enfocado en estrategia, análisis, "
+            "psicología aplicada, PNL, tecnología y "
+            "desarrollo de proyectos. "
             "Responde siempre en español. "
-            "Sé directo, inteligente, estructurado y "
-            "profesional. "
-            "\n\n"
-            "Para preguntas sencillas responde brevemente. "
-            "Para análisis complejos proporciona el nivel "
-            "de profundidad necesario. "
-            "\n\n"
-            "Nunca cortes una explicación a la mitad."
+            "Sé analítico, claro, directo y estructurado. "
+            "No inventes información. "
+            "Cuando no tengas certeza, dilo claramente. "
+            "Completa tus explicaciones y nunca dejes "
+            "frases a medias."
         ),
         max_length=10000,
     )
@@ -202,51 +169,6 @@ class ChatRequest(BaseModel):
 # ============================================================
 # UTILIDADES
 # ============================================================
-
-def is_retryable_gemini_error(
-    error: Exception,
-) -> bool:
-
-    code = getattr(
-        error,
-        "code",
-        None,
-    )
-
-    if code in {
-        408,
-        429,
-        500,
-        502,
-        503,
-        504,
-    }:
-
-        return True
-
-    error_text = str(error).upper()
-
-    markers = (
-        "408",
-        "429",
-        "500",
-        "502",
-        "503",
-        "504",
-        "RESOURCE_EXHAUSTED",
-        "QUOTA",
-        "RATE LIMIT",
-        "INTERNAL",
-        "UNAVAILABLE",
-        "TIMEOUT",
-        "DEADLINE",
-    )
-
-    return any(
-        marker in error_text
-        for marker in markers
-    )
-
 
 def safe_error_message(
     error: Exception,
@@ -306,32 +228,9 @@ async def call_gemini(
 
                 system_instruction=system_instruction,
 
-                # ------------------------------------------------
-                # RAZONAMIENTO PROFUNDO
-                # ------------------------------------------------
-
-                thinking_config=types.ThinkingConfig(
-                    thinking_budget=THINKING_BUDGET,
-                    include_thoughts=False,
-                ),
-
-                # ------------------------------------------------
-                # RESPUESTA
-                # ------------------------------------------------
-
                 max_output_tokens=MAX_OUTPUT_TOKENS,
 
-                temperature=0.4,
-
-                # ------------------------------------------------
-                # BÚSQUEDA WEB
-                # ------------------------------------------------
-
-                tools=[
-                    types.Tool(
-                        google_search=types.GoogleSearch()
-                    )
-                ],
+                temperature=0.5,
             ),
         )
 
@@ -366,43 +265,6 @@ async def call_gemini(
 
         raise RuntimeError(
             "Gemini devolvió una respuesta vacía."
-        )
-
-    # ========================================================
-    # MÉTRICAS DE RAZONAMIENTO
-    # ========================================================
-
-    usage = getattr(
-        response,
-        "usage_metadata",
-        None,
-    )
-
-    if usage:
-
-        thoughts = getattr(
-            usage,
-            "thoughts_token_count",
-            None,
-        )
-
-        output_tokens = getattr(
-            usage,
-            "candidates_token_count",
-            None,
-        )
-
-        total_tokens = getattr(
-            usage,
-            "total_token_count",
-            None,
-        )
-
-        logger.info(
-            "Gemini uso | thoughts=%s | output=%s | total=%s",
-            thoughts,
-            output_tokens,
-            total_tokens,
         )
 
     duration = (
@@ -551,9 +413,8 @@ async def health():
     return {
         "status": "healthy",
         "system": "NEXUS",
-        "version": "2.6.4",
+        "version": "2.6.5",
         "model": GEMINI_MODEL,
-        "thinking_budget": THINKING_BUDGET,
         "max_output_tokens": MAX_OUTPUT_TOKENS,
         "gemini_active": (
             gemini_client is not None
@@ -575,10 +436,8 @@ async def nexus_status():
     return {
         "status": "online",
         "system": "NEXUS",
-        "version": "2.6.4",
+        "version": "2.6.5",
         "model": GEMINI_MODEL,
-        "reasoning": True,
-        "web_search": True,
         "gemini_active": (
             gemini_client is not None
         ),
@@ -601,13 +460,7 @@ async def nexus_config():
 
         "ollama_model": OLLAMA_MODEL,
 
-        "thinking_budget": THINKING_BUDGET,
-
         "max_output_tokens": MAX_OUTPUT_TOKENS,
-
-        "reasoning": True,
-
-        "web_search": True,
 
         "use_ollama_only": (
             USE_OLLAMA_ONLY
@@ -743,8 +596,6 @@ async def chat(
 
             "fallback": False,
 
-            "reasoning": True,
-
             "request_id": request_id,
         }
 
@@ -829,3 +680,4 @@ async def chat(
         status_code=503,
         detail=detail,
 )
+        
