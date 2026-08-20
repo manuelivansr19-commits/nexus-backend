@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import time
@@ -20,17 +19,14 @@ from pydantic import BaseModel, Field
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
-    format=(
-        "%(asctime)s | %(levelname)s | "
-        "%(name)s | %(message)s"
-    ),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 
 logger = logging.getLogger("NEXUS-BACKEND")
 
 app = FastAPI(
     title="NEXUS AI",
-    version="2.6.1",
+    version="2.6.2",
 )
 
 
@@ -77,10 +73,7 @@ OLLAMA_MODEL = os.getenv(
 ).strip()
 
 USE_OLLAMA_ONLY = (
-    os.getenv(
-        "USE_OLLAMA_ONLY",
-        "false",
-    ).lower()
+    os.getenv("USE_OLLAMA_ONLY", "false").lower()
     == "true"
 )
 
@@ -106,14 +99,28 @@ REQUEST_TIMEOUT_SECONDS = float(
 gemini_client: Optional[genai.Client] = None
 
 if GEMINI_API_KEY and not USE_OLLAMA_ONLY:
-    gemini_client = genai.Client(
-        api_key=GEMINI_API_KEY,
-    )
+    try:
+        gemini_client = genai.Client(
+            api_key=GEMINI_API_KEY,
+        )
+
+        logger.info(
+            "Cliente Gemini inicializado correctamente | modelo=%s",
+            GEMINI_MODEL,
+        )
+
+    except Exception:
+        logger.exception(
+            "No se pudo inicializar el cliente Gemini."
+        )
+        gemini_client = None
+
 else:
     if USE_OLLAMA_ONLY:
         logger.info(
             "Modo exclusivo Ollama activado."
         )
+
     elif not GEMINI_API_KEY:
         logger.warning(
             "GEMINI_API_KEY no está configurada."
@@ -125,6 +132,7 @@ else:
 # ============================================================
 
 class ChatRequest(BaseModel):
+
     message: str = Field(
         default="",
         max_length=10000,
@@ -133,26 +141,37 @@ class ChatRequest(BaseModel):
     system: str = Field(
         default=(
             "Eres NEXUS, un sistema avanzado de "
-            "inteligencia artificial enfocado en "
-            "estrategia, psicología aplicada, PNL "
-            "y desarrollo de proyectos. "
-            "Responde siempre en español, de forma "
-            "analítica, clara, directa y estructurada. "
-            "Nunca dejes frases a medias y completa "
-            "tus explicaciones de manera profesional."
+            "inteligencia artificial personal. "
+            "Estás enfocado en estrategia, análisis, "
+            "psicología aplicada, PNL, tecnología y "
+            "desarrollo de proyectos. "
+            "Responde siempre en español. "
+            "Sé analítico, claro, directo y estructurado. "
+            "No inventes información. "
+            "Cuando no tengas certeza, dilo claramente. "
+            "Completa tus explicaciones y nunca dejes "
+            "frases a medias."
         ),
         max_length=5000,
     )
 
 
 # ============================================================
-# FUNCIONES AUXILIARES
+# UTILIDADES
 # ============================================================
 
-def is_retryable_gemini_error(error: Exception) -> bool:
-    code = getattr(error, "code", None)
+def is_retryable_gemini_error(
+    error: Exception,
+) -> bool:
+
+    code = getattr(
+        error,
+        "code",
+        None,
+    )
 
     if code in {
+        408,
         429,
         500,
         502,
@@ -164,13 +183,19 @@ def is_retryable_gemini_error(error: Exception) -> bool:
     error_text = str(error).upper()
 
     retryable_markers = (
+        "408",
         "429",
+        "500",
+        "502",
+        "503",
+        "504",
         "RESOURCE_EXHAUSTED",
         "QUOTA",
         "RATE LIMIT",
         "INTERNAL",
         "UNAVAILABLE",
         "TIMEOUT",
+        "DEADLINE",
     )
 
     return any(
@@ -179,49 +204,105 @@ def is_retryable_gemini_error(error: Exception) -> bool:
     )
 
 
-def safe_error_message(error: Exception) -> str:
-    code = getattr(error, "code", None)
+def get_error_code(
+    error: Exception,
+) -> Optional[str]:
+
+    code = getattr(
+        error,
+        "code",
+        None,
+    )
+
+    if code is not None:
+        return str(code)
+
+    return None
+
+
+def safe_error_message(
+    error: Exception,
+) -> str:
+
+    code = get_error_code(error)
 
     if code:
-        return f"Proveedor rechazó la solicitud con código {code}."
+        return (
+            f"Proveedor rechazó la solicitud "
+            f"con código {code}."
+        )
 
-    return "El proveedor de inteligencia artificial no respondió."
+    error_text = str(error).strip()
+
+    if error_text:
+        return error_text[:500]
+
+    return (
+        "El proveedor de inteligencia artificial "
+        "no respondió."
+    )
 
 
 # ============================================================
-# PROVEEDOR GEMINI (Con tipado nativo para búsqueda web)
+# GEMINI
 # ============================================================
 
 async def call_gemini(
     prompt: str,
     system_instruction: str,
 ) -> str:
-    if not gemini_client:
+
+    if gemini_client is None:
         raise RuntimeError(
             "Cliente Gemini no inicializado."
         )
 
     start_time = time.perf_counter()
 
-    response = await asyncio.to_thread(
-        gemini_client.models.generate_content,
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            max_output_tokens=MAX_OUTPUT_TOKENS,
-            temperature=0.6,
-            tools=[
-                types.Tool(
-                    google_search=types.GoogleSearch()
-                )
-            ],
-        ),
+    try:
+
+        response = await gemini_client.aio.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                max_output_tokens=MAX_OUTPUT_TOKENS,
+                temperature=0.6,
+                tools=[
+                    types.Tool(
+                        google_search=types.GoogleSearch()
+                    )
+                ],
+            ),
+        )
+
+    except Exception as error:
+
+        duration = time.perf_counter() - start_time
+
+        logger.error(
+            "Gemini ERROR | modelo=%s | duración=%.2fs | tipo=%s | error=%s",
+            GEMINI_MODEL,
+            duration,
+            type(error).__name__,
+            safe_error_message(error),
+        )
+
+        raise
+
+    text = getattr(
+        response,
+        "text",
+        None,
     )
 
-    text = getattr(response, "text", None)
-
     if not text or not text.strip():
+
+        logger.error(
+            "Gemini devolvió respuesta vacía | modelo=%s",
+            GEMINI_MODEL,
+        )
+
         raise RuntimeError(
             "Gemini devolvió una respuesta vacía."
         )
@@ -238,13 +319,14 @@ async def call_gemini(
 
 
 # ============================================================
-# PROVEEDOR OLLAMA
+# OLLAMA
 # ============================================================
 
 async def call_ollama(
     prompt: str,
     system_instruction: str,
 ) -> str:
+
     if not OLLAMA_URL:
         raise RuntimeError(
             "OLLAMA_URL no está configurada."
@@ -255,13 +337,18 @@ async def call_ollama(
     }
 
     if OLLAMA_API_KEY:
+
         headers["Authorization"] = (
             f"Bearer {OLLAMA_API_KEY}"
         )
 
     payload = {
         "model": OLLAMA_MODEL,
-        "prompt": f"System: {system_instruction}\n\nUser: {prompt}\n\nNEXUS:",
+        "prompt": (
+            f"System: {system_instruction}\n\n"
+            f"User: {prompt}\n\n"
+            "NEXUS:"
+        ),
         "stream": False,
         "options": {
             "num_predict": MAX_OUTPUT_TOKENS,
@@ -277,17 +364,35 @@ async def call_ollama(
 
     start_time = time.perf_counter()
 
-    async with httpx.AsyncClient(
-        timeout=timeout,
-    ) as http_client:
-        response = await http_client.post(
-            OLLAMA_URL,
-            json=payload,
-            headers=headers,
+    try:
+
+        async with httpx.AsyncClient(
+            timeout=timeout,
+        ) as http_client:
+
+            response = await http_client.post(
+                OLLAMA_URL,
+                json=payload,
+                headers=headers,
+            )
+
+            response.raise_for_status()
+
+            data = response.json()
+
+    except Exception as error:
+
+        duration = time.perf_counter() - start_time
+
+        logger.error(
+            "Ollama ERROR | modelo=%s | duración=%.2fs | tipo=%s | error=%s",
+            OLLAMA_MODEL,
+            duration,
+            type(error).__name__,
+            safe_error_message(error),
         )
 
-        response.raise_for_status()
-        data = response.json()
+        raise
 
     text = data.get(
         "response",
@@ -295,6 +400,7 @@ async def call_ollama(
     ).strip()
 
     if not text:
+
         raise RuntimeError(
             "Ollama devolvió una respuesta vacía."
         )
@@ -311,49 +417,89 @@ async def call_ollama(
 
 
 # ============================================================
-# RUTAS DEL SISTEMA
+# HOME
 # ============================================================
 
 @app.get("/")
 async def home():
-    return FileResponse("index.html")
+
+    return FileResponse(
+        "index.html"
+    )
 
 
 @app.head("/")
 async def home_head():
-    return Response(status_code=200)
 
+    return Response(
+        status_code=200
+    )
+
+
+# ============================================================
+# HEALTH
+# ============================================================
 
 @app.get("/health")
 async def health():
+
     return {
         "status": "healthy",
         "system": "NEXUS",
+        "version": "2.6.2",
         "model": GEMINI_MODEL,
-        "gemini_active": gemini_client is not None,
-        "ollama_configured": bool(OLLAMA_URL),
-        "use_ollama_only": USE_OLLAMA_ONLY,
+        "gemini_active": (
+            gemini_client is not None
+        ),
+        "ollama_configured": bool(
+            OLLAMA_URL
+        ),
+        "use_ollama_only": (
+            USE_OLLAMA_ONLY
+        ),
     }
 
+
+# ============================================================
+# STATUS
+# ============================================================
 
 @app.get("/api/nexus/status")
 async def nexus_status():
+
     return {
         "status": "online",
         "system": "NEXUS",
-        "gemini_active": gemini_client is not None,
-        "ollama_active": bool(OLLAMA_URL),
-        "use_ollama_only": USE_OLLAMA_ONLY,
+        "version": "2.6.2",
+        "gemini_active": (
+            gemini_client is not None
+        ),
+        "ollama_active": bool(
+            OLLAMA_URL
+        ),
+        "use_ollama_only": (
+            USE_OLLAMA_ONLY
+        ),
     }
 
 
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
+
 @app.get("/api/nexus/config")
 async def nexus_config():
+
     return {
         "model": GEMINI_MODEL,
         "ollama_model": OLLAMA_MODEL,
-        "use_ollama_only": USE_OLLAMA_ONLY,
-        "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "use_ollama_only": (
+            USE_OLLAMA_ONLY
+        ),
+        "max_output_tokens": (
+            MAX_OUTPUT_TOKENS
+        ),
+        "web_search": True,
     }
 
 
@@ -366,16 +512,31 @@ async def chat(
     request: ChatRequest,
     req: Request,
 ):
-    request_id = str(uuid.uuid4())
+
+    request_id = str(
+        uuid.uuid4()
+    )
+
     start_time = time.perf_counter()
+
+    client_ip = (
+        req.client.host
+        if req.client
+        else "unknown"
+    )
 
     logger.info(
         "[%s] Solicitud recibida | ip=%s",
         request_id,
-        req.client.host if req.client else "unknown",
+        client_ip,
     )
 
+    # --------------------------------------------------------
+    # MENSAJE VACÍO
+    # --------------------------------------------------------
+
     if not request.message.strip():
+
         return {
             "success": True,
             "response": (
@@ -388,17 +549,22 @@ async def chat(
         }
 
     # --------------------------------------------------------
-    # MODO EXCLUSIVO OLLAMA
+    # OLLAMA EXCLUSIVO
     # --------------------------------------------------------
 
     if USE_OLLAMA_ONLY:
+
         try:
+
             text = await call_ollama(
                 request.message,
                 request.system,
             )
 
-            duration = time.perf_counter() - start_time
+            duration = (
+                time.perf_counter()
+                - start_time
+            )
 
             logger.info(
                 "[%s] Ollama exclusivo exitoso | duración=%.2fs",
@@ -415,6 +581,7 @@ async def chat(
             }
 
         except Exception as error:
+
             logger.exception(
                 "[%s] Ollama exclusivo falló",
                 request_id,
@@ -428,6 +595,9 @@ async def chat(
                     ),
                     "provider": "ollama",
                     "request_id": request_id,
+                    "error": safe_error_message(
+                        error
+                    ),
                 },
             ) from error
 
@@ -435,13 +605,19 @@ async def chat(
     # GEMINI PRINCIPAL
     # --------------------------------------------------------
 
+    gemini_error = None
+
     try:
+
         text = await call_gemini(
             request.message,
             request.system,
         )
 
-        duration = time.perf_counter() - start_time
+        duration = (
+            time.perf_counter()
+            - start_time
+        )
 
         logger.info(
             "[%s] Gemini exitoso | duración=%.2fs",
@@ -457,18 +633,23 @@ async def chat(
             "request_id": request_id,
         }
 
-    except Exception as gemini_error:
+    except Exception as error:
+
+        gemini_error = error
+
         logger.warning(
-            "[%s] Gemini falló | motivo=%s",
+            "[%s] Gemini falló | tipo=%s | motivo=%s",
             request_id,
-            safe_error_message(gemini_error),
+            type(error).__name__,
+            safe_error_message(error),
         )
 
         if not is_retryable_gemini_error(
-            gemini_error
+            error
         ):
+
             logger.error(
-                "[%s] Error de Gemini no reintentable",
+                "[%s] Error Gemini no reintentable",
                 request_id,
             )
 
@@ -477,13 +658,18 @@ async def chat(
     # --------------------------------------------------------
 
     if OLLAMA_URL:
+
         try:
+
             text = await call_ollama(
                 request.message,
                 request.system,
             )
 
-            duration = time.perf_counter() - start_time
+            duration = (
+                time.perf_counter()
+                - start_time
+            )
 
             logger.info(
                 "[%s] Ollama fallback exitoso | duración=%.2fs",
@@ -499,31 +685,43 @@ async def chat(
                 "request_id": request_id,
             }
 
-        except Exception:
+        except Exception as ollama_error:
+
             logger.exception(
                 "[%s] Ollama fallback también falló",
                 request_id,
             )
 
     # --------------------------------------------------------
-    # AMBOS PROVEEDORES FALLARON
+    # TODO FALLÓ
     # --------------------------------------------------------
 
     logger.error(
-        "[%s] Gemini y Ollama no están disponibles",
+        "[%s] Todos los proveedores fallaron",
         request_id,
     )
 
+    detail = {
+        "message": (
+            "NEXUS no pudo obtener una respuesta "
+            "del proveedor de inteligencia artificial."
+        ),
+        "provider": "none",
+        "fallback": True,
+        "request_id": request_id,
+    }
+
+    # Solo para diagnóstico del backend.
+    # No expone la API key.
+    if gemini_error:
+
+        detail["gemini_error"] = (
+            safe_error_message(
+                gemini_error
+            )
+        )
+
     raise HTTPException(
         status_code=503,
-        detail={
-            "message": (
-                "Gemini y Ollama no están disponibles "
-                "en este momento."
-            ),
-            "provider": "none",
-            "fallback": True,
-            "request_id": request_id,
-        },
+        detail=detail,
     )
-    
