@@ -4,6 +4,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
+import httpx
 import os
 
 app = FastAPI(title="NEXUS AI", version="1.0.0")
@@ -73,55 +74,58 @@ async def status():
 
 
 # ============================================================
-# CHAT NEXUS
+# CHAT NEXUS CON FALLBACK A OLLAMA
 # ============================================================
 
 @app.post("/api/nexus/chat")
 async def chat(request: ChatRequest):
 
-    if client is None:
-        raise HTTPException(
-            status_code=500,
-            detail="GEMINI_API_KEY no está configurada en el servidor."
-        )
+    text = None
 
-    try:
-
-        response = client.models.generate_content(
-            model="gemini-3.7-flash",
-            contents=request.message,
-            config=types.GenerateContentConfig(
-                system_instruction=request.system,
-                max_output_tokens=300,
-                temperature=0.7
+    # 1. Intentar con Gemini
+    if client is not None:
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=request.message,
+                config=types.GenerateContentConfig(
+                    system_instruction=request.system,
+                    max_output_tokens=300,
+                    temperature=0.7
+                )
             )
-        )
+            if response and getattr(response, "text", None):
+                text = response.text.strip()
+        except Exception as e:
+            print("⚠️ Aviso Gemini (Fallback a Ollama activado):", repr(e))
 
-        # Protección contra respuestas vacías
-        if not response:
-            raise Exception("Gemini no devolvió respuesta.")
+    # 2. Si Gemini falló o no hay tokens, usar Ollama local como respaldo
+    if not text:
+        try:
+            ollama_url = "http://localhost:11434/api/generate"
+            payload = {
+                "model": "llama3",
+                "prompt": f"{request.system}\n\nUsuario: {request.message}\nNEXUS:",
+                "stream": False
+            }
+            async with httpx.AsyncClient(timeout=30) as http_client:
+                r = await http_client.post(ollama_url, json=payload)
+                if r.status_code == 200:
+                    data = r.json()
+                    text = data.get("response", "").strip()
+        except Exception as oe:
+            print("⚠️ Error en respaldo Ollama:", repr(oe))
 
-        text = getattr(response, "text", None)
-
-        if not text:
-            raise Exception("Gemini devolvió una respuesta sin texto.")
-
-        return {
-            "success": True,
-            "response": text.strip()
-        }
-
-    except Exception as e:
-
-        print("===================================")
-        print("ERROR NEXUS:")
-        print(repr(e))
-        print("===================================")
-
+    if not text:
         raise HTTPException(
             status_code=500,
-            detail=f"NEXUS no pudo procesar la solicitud: {str(e)}"
+            detail="NEXUS no pudo procesar la solicitud con ningún motor disponible."
         )
+
+    return {
+        "success": True,
+        "response": text
+    }
 
 
 # ============================================================
@@ -134,5 +138,5 @@ async def health():
     return {
         "status": "healthy",
         "system": "NEXUS"
-    }
+        }
     
