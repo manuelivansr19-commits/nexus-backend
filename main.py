@@ -30,7 +30,7 @@ logger = logging.getLogger("NEXUS-BACKEND")
 
 app = FastAPI(
     title="NEXUS AI",
-    version="2.5.0",
+    version="2.6.1",
 )
 
 
@@ -58,7 +58,7 @@ GEMINI_API_KEY = os.getenv(
 
 GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
-    "gemini-1.5-flash",
+    "gemini-2.5-flash",
 ).strip()
 
 OLLAMA_URL = os.getenv(
@@ -87,7 +87,7 @@ USE_OLLAMA_ONLY = (
 MAX_OUTPUT_TOKENS = int(
     os.getenv(
         "MAX_OUTPUT_TOKENS",
-        "600",
+        "1500",
     )
 )
 
@@ -189,7 +189,7 @@ def safe_error_message(error: Exception) -> str:
 
 
 # ============================================================
-# PROVEEDOR GEMINI
+# PROVEEDOR GEMINI (Con tipado nativo para búsqueda web)
 # ============================================================
 
 async def call_gemini(
@@ -211,6 +211,11 @@ async def call_gemini(
             system_instruction=system_instruction,
             max_output_tokens=MAX_OUTPUT_TOKENS,
             temperature=0.6,
+            tools=[
+                types.Tool(
+                    google_search=types.GoogleSearch()
+                )
+            ],
         ),
     )
 
@@ -324,6 +329,7 @@ async def health():
     return {
         "status": "healthy",
         "system": "NEXUS",
+        "model": GEMINI_MODEL,
         "gemini_active": gemini_client is not None,
         "ollama_configured": bool(OLLAMA_URL),
         "use_ollama_only": USE_OLLAMA_ONLY,
