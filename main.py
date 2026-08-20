@@ -1,21 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 import os
 
-
-# ============================================================
-# NEXUS AI
-# ============================================================
-
-app = FastAPI(
-    title="NEXUS AI",
-    version="1.0.0"
-)
-
+app = FastAPI(title="NEXUS AI", version="1.0.0")
 
 # ============================================================
 # CORS
@@ -29,29 +20,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # ============================================================
-# GEMINI CLIENT
+# GEMINI
 # ============================================================
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    print("ERROR: GEMINI_API_KEY no está configurada.")
+    print("⚠️ ERROR: GEMINI_API_KEY no está configurada.")
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
 # ============================================================
-# REQUEST MODEL
+# MODELOS
 # ============================================================
 
 class ChatRequest(BaseModel):
-    message: str
-    system: str = (
-        "Eres NEXUS. "
-        "Responde de forma corta, directa y precisa. "
-        "Máximo 3 oraciones salvo que el usuario pida más detalle."
+    message: str = Field(..., min_length=1, max_length=10000)
+
+    system: str = Field(
+        default=(
+            "Eres NEXUS, un asistente de inteligencia artificial "
+            "personal. Responde de forma corta, directa, precisa y útil. "
+            "Máximo 3 oraciones salvo que el usuario solicite más detalle."
+        ),
+        max_length=5000
     )
 
 
@@ -65,7 +59,7 @@ async def home():
 
 
 # ============================================================
-# NEXUS STATUS
+# STATUS
 # ============================================================
 
 @app.get("/api/nexus/status")
@@ -79,7 +73,7 @@ async def status():
 
 
 # ============================================================
-# NEXUS CHAT
+# CHAT NEXUS
 # ============================================================
 
 @app.post("/api/nexus/chat")
@@ -94,30 +88,33 @@ async def chat(request: ChatRequest):
     try:
 
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=request.message,
             config=types.GenerateContentConfig(
                 system_instruction=request.system,
-                max_output_tokens=300
+                max_output_tokens=300,
+                temperature=0.7
             )
         )
 
+        # Protección contra respuestas vacías
         if not response:
             raise Exception("Gemini no devolvió respuesta.")
 
-        text = response.text
+        text = getattr(response, "text", None)
 
         if not text:
-            raise Exception("Gemini devolvió una respuesta vacía.")
+            raise Exception("Gemini devolvió una respuesta sin texto.")
 
         return {
+            "success": True,
             "response": text.strip()
         }
 
     except Exception as e:
 
         print("===================================")
-        print("ERROR EN NEXUS")
+        print("ERROR NEXUS:")
         print(repr(e))
         print("===================================")
 
@@ -138,3 +135,4 @@ async def health():
         "status": "healthy",
         "system": "NEXUS"
     }
+    
