@@ -1,20 +1,19 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
-from google.genai.errors import APIError
 import httpx
 import os
-import time
 import random
 import logging
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("NEXUS-BACKEND")
 
-app = FastAPI(title="NEXUS AI", version="2.1.0")
+app = FastAPI(title="NEXUS AI", version="2.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,12 +33,12 @@ MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "800"))
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY and not USE_OLLAMA_ONLY else None
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=10000)
+    # Evita que el servidor colapse si el micrófono manda un texto vacío
+    message: str = Field(default="", max_length=10000)
     system: str = Field(
         default=(
-            "Eres NEXUS, un asistente de inteligencia artificial "
-            "personal. Responde de forma corta, directa, precisa y útil. "
-            "Máximo 3 oraciones salvo que el usuario solicite más detalle."
+            "Eres NEXUS, un asistente de inteligencia artificial personal. "
+            "Responde de forma corta, directa, precisa y útil."
         ),
         max_length=5000
     )
@@ -48,38 +47,18 @@ class ChatRequest(BaseModel):
 async def home():
     return FileResponse("index.html")
 
-@app.head("/")
-async def home_head():
-    return {"status": "ok"}
-
-@app.get("/sw.js")
-async def service_worker():
-    return JSONResponse(status_code=404, content={"error": "Service worker no configurado."})
-
 @app.get("/health")
 async def health():
-    return {
-        "status": "healthy",
-        "system": "NEXUS",
-        "gemini_active": client is not None,
-        "ollama_configured": bool(OLLAMA_URL)
-    }
+    return {"status": "healthy", "gemini_active": client is not None}
 
-@app.get("/api/nexus/status")
-async def status():
-    return {
-        "status": "online",
-        "system": "NEXUS",
-        "gemini_configured": client is not None,
-        "use_ollama_only": USE_OLLAMA_ONLY
-    }
-
-async def call_gemini_with_retry(prompt: str, system_instruction: str):
+async def call_gemini_async(prompt: str, system_instruction: str):
     if not client:
-        raise Exception("Cliente Gemini no inicializado.")
+        raise Exception("Gemini no inicializado.")
     
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
+    # Envolvemos la llamada en un hilo asíncrono para NO congelar el servidor de Render
+    response = await asyncio.to_thread(
+        client.models.generate_content,
+        model="gemini-1.5-flash",  # Versión oficial estable
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
@@ -89,71 +68,79 @@ async def call_gemini_with_retry(prompt: str, system_instruction: str):
     )
     if response and getattr(response, "text", None):
         return response.text.strip()
-    raise Exception("Gemini devolvió respuesta vacía.")
+    raise Exception("Respuesta vacía de Gemini.")
 
 async def call_ollama(prompt: str, system_instruction: str):
     if not OLLAMA_URL:
-        raise Exception("OLLAMA_URL no está configurada en Render.")
-    
-    headers = {}
-    if OLLAMA_API_KEY:
-        headers["Authorization"] = f"Bearer {OLLAMA_API_KEY}"
-        
+        raise Exception("OLLAMA_URL no configurada.")
+    headers = {"Authorization": f"Bearer {OLLAMA_API_KEY}"} if OLLAMA_API_KEY else {}
     payload = {
         "model": OLLAMA_MODEL,
         "prompt": f"System: {system_instruction}\n\nUser: {prompt}\nNEXUS:",
         "stream": False
     }
-    
     async with httpx.AsyncClient(timeout=30) as http_client:
         r = await http_client.post(OLLAMA_URL, json=payload, headers=headers)
         if r.status_code == 200:
-            data = r.json()
-            return data.get("response", "").strip()
-        else:
-            raise Exception(f"Ollama remoto respondió con HTTP {r.status_code}")
+            return r.json().get("response", "").strip()
+        raise Exception(f"Error {r.status_code}")
 
 @app.post("/api/nexus/chat")
 async def chat(request: ChatRequest, req: Request):
-    request_id = str(random.randint(10000, 99999))
-    text = None
-    provider = "gemini"
-    fallback = False
-    error_log = ""
+    try:
+        # 1. Si el micrófono captó ruido o vacío, respondemos suavemente
+        if not request.message.strip():
+            return {
+                "success": True, 
+                "response": "No escuché bien, ¿puedes repetir?", 
+                "provider": "system", 
+                "fallback": False
+            }
 
-    if USE_OLLAMA_ONLY:
-        try:
-            text = await call_ollama(request.message, request.system)
-            provider = "ollama"
-        except Exception as oe:
-            error_log = str(oe)
-    else:
-        try:
-            text = await call_gemini_with_retry(request.message, request.system)
-            provider = "gemini"
-        except Exception as ge:
-            error_log = str(ge)
-            logger.warning(f"[{request_id}] Gemini falló (Cuota/Error): {error_log}. Intentando respaldo...")
-            
-            # Intentar Ollama si está configurado
-            if OLLAMA_URL:
-                try:
-                    text = await call_ollama(request.message, request.system)
-                    provider = "ollama"
+        text = None
+        provider = "gemini"
+        fallback = False
+        
+        # 2. Lógica principal sin bloqueos
+        if USE_OLLAMA_ONLY:
+            try:
+                text = await call_ollama(request.message, request.system)
+                provider = "ollama"
+            except Exception:
+                pass
+        else:
+            try:
+                text = await call_gemini_async(request.message, request.system)
+            except Exception as ge:
+                logger.warning(f"Gemini falló: {str(ge)}")
+                if OLLAMA_URL:
+                    try:
+                        text = await call_ollama(request.message, request.system)
+                        provider = "ollama"
+                        fallback = True
+                    except Exception:
+                        pass
+                
+                # Respaldo en caso de que Gemini alcance su límite
+                if not text:
+                    text = "NEXUS: Mi conexión con la red principal está recargándose. Intenta en un momento."
+                    provider = "emergency_fallback"
                     fallback = True
-                except Exception as oe:
-                    error_log += f" | Ollama Error: {str(oe)}"
-            
-            # RESPALDO DE EMERGENCIA LOCAL EN RENDER (Evita el pantallazo rojo si no hay Ollama externo)
-            if not text:
-                text = "NEXUS se encuentra recargando energía (Límite de cuota de Gemini alcanzado y sin servidor Ollama secundario configurado). Intenta de nuevo en unos minutos."
-                provider = "emergency_fallback"
-                fallback = True
 
-    return {
-        "success": True,
-        "response": text,
-        "provider": provider,
-        "fallback": fallback
-    }
-    
+        return {
+            "success": True,
+            "response": text,
+            "provider": provider,
+            "fallback": fallback
+        }
+
+    except Exception as global_e:
+        logger.error(f"Error crítico global: {str(global_e)}")
+        # 3. Blindaje total: Nunca devolver un error 500 que cause "Error de conexión"
+        return {
+            "success": False,
+            "response": "NEXUS: Ocurrió un error interno, pero sigo en línea.",
+            "provider": "error",
+            "fallback": True
+        }
+        
