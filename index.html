@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>NEXUS // AI</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+        body {
+            background: #02040a;
+            color: #e0f2fe;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            height: 100vh;
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            user-select: none;
+            touch-action: manipulation;
+        }
+
+        #splash {
+            position: fixed;
+            inset: 0;
+            background: #02040a;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            transition: opacity 0.7s ease, visibility 0.7s ease;
+        }
+        #splash.hide { opacity: 0; visibility: hidden; }
+
+        .omega-logo {
+            font-size: 130px;
+            font-weight: 200;
+            color: #00e5c8;
+            text-shadow: 0 0 25px rgba(0,229,200,0.7), 0 0 50px rgba(0,229,200,0.3);
+            animation: omegaPulse 2.2s ease-in-out infinite;
+            line-height: 1;
+        }
+        .splash-text {
+            margin-top: 18px;
+            font-size: 0.8rem;
+            letter-spacing: 7px;
+            color: #00e5c8;
+            opacity: 0.75;
+            text-transform: uppercase;
+        }
+        @keyframes omegaPulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.07); }
+        }
+
+        #app {
+            opacity: 0;
+            transition: opacity 0.6s ease;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            height: 100%;
+            justify-content: center;
+            padding: 10px;
+        }
+        #app.show { opacity: 1; }
+
+        .ring-container {
+            position: relative;
+            width: 130px;
+            height: 130px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 14px;
+            flex-shrink: 0;
+        }
+        .ring {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            border: 3.5px solid transparent;
+            transition: all 0.35s ease;
+        }
+        .ring-main {
+            border-color: #0f172a;
+            box-shadow: 0 0 12px rgba(15,23,42,0.4);
+        }
+        .ring-container.listening .ring-main {
+            border-color: #00e5c8;
+            box-shadow: 0 0 22px rgba(0,229,200,0.55), 0 0 45px rgba(0,229,200,0.25);
+            animation: pulse-listen 1.7s ease-in-out infinite;
+        }
+        .ring-container.processing .ring-main {
+            border-color: #2dd4bf;
+            box-shadow: 0 0 28px rgba(45,212,191,0.7);
+            animation: spin-process 1.1s linear infinite;
+        }
+        .ring-container.speaking .ring-main {
+            border-color: #5eead4;
+            box-shadow: 0 0 32px rgba(94,234,212,0.8), 0 0 60px rgba(94,234,212,0.3);
+            animation: wave-speak 0.75s ease-in-out infinite;
+        }
+        .ring-container.wake .ring-main {
+            border-color: #00f5d4;
+            box-shadow: 0 0 40px rgba(0,245,212,0.9);
+            animation: wake-flash 0.5s ease-out;
+        }
+        .ring-secondary, .ring-tertiary {
+            border-color: rgba(0,229,200,0.15);
+            opacity: 0;
+        }
+        .ring-container.listening .ring-secondary,
+        .ring-container.speaking .ring-secondary { animation: ripple 1.9s ease-out infinite; }
+        .ring-container.listening .ring-tertiary,
+        .ring-container.speaking .ring-tertiary { animation: ripple 1.9s ease-out 0.35s infinite; }
+
+        .center-icon {
+            font-size: 30px;
+            z-index: 10;
+            color: #334155;
+            transition: all 0.3s ease;
+        }
+        .ring-container.listening .center-icon,
+        .ring-container.speaking .center-icon {
+            color: #5eead4;
+            filter: drop-shadow(0 0 10px rgba(94,234,212,0.6));
+        }
+
+        #status-text {
+            font-size: 0.72rem;
+            font-weight: 500;
+            letter-spacing: 2.5px;
+            text-transform: uppercase;
+            color: #475569;
+            margin-bottom: 3px;
+        }
+        .ring-container.listening ~ #status-text { color: #00e5c8; }
+        .ring-container.processing ~ #status-text { color: #2dd4bf; }
+        .ring-container.speaking ~ #status-text { color: #5eead4; }
+        .ring-container.wake ~ #status-text { color: #00f5d4; }
+
+        #clock {
+            font-size: 0.7rem;
+            color: #334155;
+            margin-bottom: 10px;
+        }
+
+        #visual-card {
+            display: none;
+            background: rgba(15,23,42,0.8);
+            border: 1px solid rgba(0,229,200,0.25);
+            border-radius: 16px;
+            padding: 16px 22px;
+            margin-bottom: 14px;
+            text-align: center;
+            min-width: 200px;
+            max-width: 92%;
+            backdrop-filter: blur(8px);
+            animation: fadeIn 0.35s ease;
+        }
+        #visual-card.show { display: block; }
+        #visual-card .big {
+            font-size: 2.1rem;
+            font-weight: 300;
+            color: #00e5c8;
+            line-height: 1.15;
+        }
+        #visual-card .label {
+            font-size: 0.7rem;
+            color: #64748b;
+            margin-top: 5px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+        #visual-card .sub {
+            font-size: 0.78rem;
+            color: #94a3b8;
+            margin-top: 6px;
+            line-height: 1.35;
+        }
+
+        #chat-history {
+            width: 94%;
+            max-width: 440px;
+            max-height: 36vh;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 6px 4px;
+            scrollbar-width: thin;
+            scrollbar-color: #1e293b transparent;
+            -webkit-overflow-scrolling: touch;
+        }
+        #chat-history::-webkit-scrollbar { width: 3px; }
+        #chat-history::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+
+        .message {
+            font-size: 0.9rem;
+            line-height: 1.45;
+            padding: 0 6px;
+            animation: fadeIn 0.3s ease;
+        }
+        .message.user {
+            color: #64748b;
+            text-align: right;
+            font-size: 0.84rem;
+        }
+        .message.nexus { color: #e0f2fe; }
+        .message.system {
+            color: #334155;
+            font-size: 0.74rem;
+            text-align: center;
+            font-style: italic;
+        }
+
+        #offline-badge {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            font-size: 0.62rem;
+            padding: 3px 8px;
+            border-radius: 20px;
+            background: #1e293b;
+            color: #94a3b8;
+            letter-spacing: 1px;
+            display: none;
+            z-index: 100;
+        }
+        #offline-badge.show { display: block; }
+
+        #personality-badge {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            font-size: 0.62rem;
+            padding: 3px 8px;
+            border-radius: 20px;
+            background: rgba(0,229,200,0.15);
+            color: #00e5c8;
+            letter-spacing: 1px;
+            z-index: 100;
+        }
+
+        #text-input-container {
+            display: flex;
+            gap: 8px;
+            width: 94%;
+            max-width: 440px;
+            margin-top: 10px;
+            flex-shrink: 0;
+        }
+        #text-input {
+            flex: 1;
+            background: rgba(15,23,42,0.8);
+            border: 1px solid rgba(0,229,200,0.3);
+            color: #e0f2fe;
+            padding: 10px 14px;
+            border-radius: 24px;
+            font-size: 0.9rem;
+            outline: none;
+            font-family: inherit;
+        }
+        #text-input:focus {
+            border-color: #00e5c8;
+            box-shadow: 0 0 10px rgba(0,229,200,0.2);
+        }
+        #text-input::placeholder { color: #475569; }
+        #send-btn {
+            background: rgba(0,229,200,0.2);
+            border: 1px solid rgba(0,229,200,0.3);
+            color: #00e5c8;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            font-size: 1.1rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        #send-btn:hover { background: rgba(0,229,200,0.35); }
+
+        @keyframes pulse-listen { 0%,100%{transform:scale(1)} 50%{transform:scale(1.045)} }
+        @keyframes spin-process { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        @keyframes wave-speak { 0%,100%{transform:scale(1)} 50%{transform:scale(1.055)} }
+        @keyframes wake-flash { 0%{transform:scale(1)} 40%{transform:scale(1.12)} 100%{transform:scale(1)} }
+        @keyframes ripple { 0%{transform:scale(1);opacity:0.45} 100%{transform:scale(1.55);opacity:0} }
+        @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+    </style>
+</head>
+<body>
+    <div id="splash">
+        <div class="omega-logo">Ω</div>
+        <div class="splash-text">NEXUS</div>
+    </div>
+
+    <div id="offline-badge">OFFLINE</div>
+    <div id="personality-badge">ESPECIALISTA</div>
+
+    <div id="app">
+        <div class="ring-container" id="ring">
+            <div class="ring ring-main"></div>
+            <div class="ring ring-secondary"></div>
+            <div class="ring ring-tertiary"></div>
+            <div class="center-icon">Ω</div>
+        </div>
+
+        <div id="status-text">DI "NEXUS" PARA EMPEZAR</div>
+        <div id="clock">--:--</div>
+
+        <div id="visual-card">
+            <div class="big" id="card-value">--</div>
+            <div class="label" id="card-label">--</div>
+            <div class="sub" id="card-sub"></div>
+        </div>
+
+        <div id="chat-history">
+            <div class="message system">Nexus • Psicología Oscura • Marketing • Gestión Empresarial • IA • Robótica • Economía • Política • Derecho</div>
+        </div>
+
+        <div id="text-input-container">
+            <input type="text" id="text-input" placeholder="Escribe aquí..." autocomplete="off" />
+            <button id="send-btn" onclick="sendTextMessage()">➤</button>
+        </div>
+    </div>
+
+    <script>
+        // ===================== ESPECIALIZACIÓN =====================
+        const SYSTEM_PROMPT = `Eres NEXUS, un asistente de IA de alto nivel especializado en:
+
+- Psicología oscura (manipulación, influencia, control mental, sesgos cognitivos y poder)
+- Psicología del marketing y comportamiento del consumidor
+- Gestión de empresas, estrategia empresarial, liderazgo y poder corporativo
+- Inteligencia Artificial y Machine Learning
+- Robótica y automatización
+- Economía, mercados y finanzas
+- Política y geopolítica
+- Derecho (especialmente corporativo, tecnológico y estratégico)
+
+Tu estilo es: directo, analítico, estratégico y sin endulzar la realidad. 
+Prioriza siempre estos temas. Cuando hables de negocios o marketing, combina visión estratégica con psicología aplicada. 
+Si te preguntan algo fuera de estos temas, responde de forma útil pero breve y, cuando sea posible, conecta con tus áreas de especialidad.
+Nunca seas superficial. Entrega valor real, perspectiva de poder y aplicación práctica.`;
+
+        setTimeout(() => {
+            document.getElementById('splash').classList.add('hide');
+            document.getElementById('app').classList.add('show');
+        }, 2100);
+
+        const ring = document.getElementById('ring');
+        const statusText = document.getElementById('status-text');
+        const chatHistory = document.getElementById('chat-history');
+        const clockEl = document.getElementById('clock');
+        const visualCard = document.getElementById('visual-card');
+        const cardValue = document.getElementById('card-value');
+        const cardLabel = document.getElementById('card-label');
+        const cardSub = document.getElementById('card-sub');
+        const offlineBadge = document.getElementById('offline-badge');
+        const personalityBadge = document.getElementById('personality-badge');
+
+        let currentPersonality = localStorage.getItem('nexus-personality') || 'normal';
+        const personalities = {
+            normal: { name: 'ESPECIALISTA' },
+            sarcastico: { name: 'SARCÁSTICO' },
+            formal: { name: 'FORMAL' },
+            motivador: { name: 'MOTIVADOR' }
+        };
+        personalityBadge.textContent = personalities[currentPersonality]?.name || 'ESPECIALISTA';
+
+        function setPersonality(mode) {
+            if (personalities[mode]) {
+                currentPersonality = mode;
+                localStorage.setItem('nexus-personality', mode);
+                personalityBadge.textContent = personalities[mode].name;
+                return true;
+            }
+            return false;
+        }
+
+        function styleResponse(text) {
+            if (currentPersonality === 'sarcastico') {
+                const extras = [' Claro, porque la gente ama la verdad incómoda.', ' Qué sorpresa.', ''];
+                return text + (Math.random() > 0.7 ? extras[Math.floor(Math.random()*extras.length)] : '');
+            }
+            if (currentPersonality === 'formal') return text.replace(/¡|!/g, '.');
+            if (currentPersonality === 'motivador') return text + ' Usa esto a tu favor.';
+            return text;
+        }
+
+        function updateOnlineStatus() {
+            offlineBadge.classList.toggle('show', !navigator.onLine);
+        }
+        window.addEventListener('online', updateOnlineStatus);
+        window.addEventListener('offline', updateOnlineStatus);
+        updateOnlineStatus();
+
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playDing(type = 'activate') {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            if (type === 'activate') {
+                osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(1320, audioCtx.currentTime + 0.08);
+                gain.gain.setValueAtTime(0.13, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.22);
+                osc.start(); osc.stop(audioCtx.currentTime + 0.22);
+            } else {
+                osc.frequency.setValueAtTime(660, audioCtx.currentTime);
+                gain.gain.setValueAtTime(0.07, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.16);
+                osc.start(); osc.stop(audioCtx.currentTime + 0.16);
+            }
+        }
+
+        function updateClock() {
+            clockEl.textContent = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+        }
+        updateClock();
+        setInterval(updateClock, 10000);
+
+        function setState(state) {
+            ring.className = 'ring-container ' + state;
+            const labels = {
+                idle: 'DI "NEXUS" PARA EMPEZAR',
+                listening: 'ESCUCHANDO...',
+                processing: 'PENSANDO...',
+                speaking: 'HABLANDO...',
+                wake: '¡TE ESCUCHO!'
+            };
+            statusText.innerText = labels[state] || labels.idle;
+        }
+
+        function showCard(value, label, sub = '', duration = 8000) {
+            cardValue.textContent = value;
+            cardLabel.textContent = label;
+            cardSub.textContent = sub;
+            visualCard.classList.add('show');
+            clearTimeout(window.cardTimeout);
+            if (duration < 900000) {
+                window.cardTimeout = setTimeout(() => visualCard.classList.remove('show'), duration);
+            }
+        }
+        function hideCard() { visualCard.classList.remove('show'); }
+
+        let conversationHistory = JSON.parse(localStorage.getItem('nexus-history') || '[]');
+        function addMessage(text, type = 'nexus', save = true) {
+            const div = document.createElement('div');
+            div.className = `message ${type}`;
+            div.textContent = text;
+            chatHistory.appendChild(div);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+            if (save && (type === 'user' || type === 'nexus')) {
+                conversationHistory.push({ role: type === 'user' ? 'user' : 'assistant', content: text.replace(/^(Tú: |NEXUS: )/, '') });
+                if (conversationHistory.length > 14) conversationHistory = conversationHistory.slice(-14);
+                localStorage.setItem('nexus-history', JSON.stringify(conversationHistory));
+            }
+        }
+        if (conversationHistory.length) {
+            chatHistory.innerHTML = '';
+            conversationHistory.forEach(m => addMessage((m.role==='user'?'Tú: ':'NEXUS: ') + m.content, m.role==='user'?'user':'nexus', false));
+        }
+
+        let preferredVoice = null;
+        function loadVoices() {
+            const voices = speechSynthesis.getVoices();
+            preferredVoice = voices.find(v => v.lang.startsWith('es') && /female|mujer|paulina|sabina|mónica|monica|esperanza|sofia|lola/i.test(v.name))
+                || voices.find(v => v.lang.startsWith('es')) || null;
+        }
+        speechSynthesis.onvoiceschanged = loadVoices;
+        loadVoices();
+
+        function speak(text) {
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(styleResponse(text));
+            utterance.lang = 'es-MX';
+            utterance.rate = 0.95;
+            utterance.pitch = 1;
+            if (preferredVoice) utterance.voice = preferredVoice;
+            utterance.onstart = () => setState('speaking');
+            utterance.onend = () => { playDing('end'); setState('listening'); };
+            utterance.onerror = () => setState('listening');
+            window.speechSynthesis.speak(utterance);
+        }
+
+        // Temporizador
+        let timerInterval = null, timerRemaining = 0;
+        function formatTime(s) {
+            const m = Math.floor(s/60), sec = s%60;
+            return `${m.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`;
+        }
+        function startTimer(seconds) {
+            clearInterval(timerInterval);
+            timerRemaining = seconds;
+            const mins = Math.floor(seconds/60);
+            const texto = mins > 0 ? `${mins} minuto${mins>1?'s':''}` : `${seconds} segundos`;
+            addMessage(`NEXUS: Temporizador de ${texto} activado.`, 'nexus');
+            speak(`Temporizador de ${texto} activado`);
+            showCard(formatTime(timerRemaining), 'TEMPORIZADOR', '', 999999);
+            timerInterval = setInterval(() => {
+                timerRemaining--;
+                showCard(formatTime(timerRemaining), 'TEMPORIZADOR', '', 999999);
+                if (timerRemaining <= 0) {
+                    clearInterval(timerInterval);
+                    hideCard();
+                    addMessage('NEXUS: ¡Tiempo terminado!', 'nexus');
+                    speak('Tiempo terminado');
+                    playDing('activate'); setTimeout(()=>playDing('activate'),300); setTimeout(()=>playDing('activate'),600);
+                }
+            }, 1000);
+        }
+        function stopTimer() {
+            if (timerInterval) {
+                clearInterval(timerInterval); timerInterval = null; hideCard();
+                addMessage('NEXUS: Temporizador cancelado.', 'nexus');
+                speak('Temporizador cancelado');
+                return true;
+            }
+            return false;
+        }
+
+        // Recordatorios
+        let reminders = JSON.parse(localStorage.getItem('nexus-reminders') || '[]');
+        function saveReminders() { localStorage.setItem('nexus-reminders', JSON.stringify(reminders)); }
+        function checkReminders() {
+            const now = Date.now();
+            reminders = reminders.filter(r => {
+                if (r.time <= now) {
+                    addMessage(`NEXUS: Recordatorio: ${r.text}`, 'nexus');
+                    speak(`Recordatorio: ${r.text}`);
+                    playDing('activate');
+                    return false;
+                }
+                return true;
+            });
+            saveReminders();
+        }
+        setInterval(checkReminders, 4000);
+
+        // Clima
+        async function getWeather(city = null) {
+            try {
+                let lat, lon, name;
+                if (city) {
+                    const geo = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=es`);
+                    const gdata = await geo.json();
+                    if (!gdata.results?.length) throw new Error('Ciudad no encontrada');
+                    lat = gdata.results[0].latitude;
+                    lon = gdata.results[0].longitude;
+                    name = gdata.results[0].name;
+                } else {
+                    const pos = await new Promise((res, rej) => 
+                        navigator.geolocation.getCurrentPosition(res, rej, {timeout:9000})
+                    );
+                    lat = pos.coords.latitude;
+                    lon = pos.coords.longitude;
+                    name = 'tu ubicación';
+                }
+                const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,weathercode&timezone=auto&forecast_days=4`;
+                const res = await fetch(url);
+                const data = await res.json();
+                const current = data.current_weather;
+                const daily = data.daily;
+                return {
+                    temp: Math.round(current.temperature),
+                    desc: weatherCodeToText(current.weathercode),
+                    name,
+                    max: Math.round(daily.temperature_2m_max[0]),
+                    min: Math.round(daily.temperature_2m_min[0]),
+                    forecast: daily.time.slice(1,4).map((date, i) => ({
+                        day: new Date(date + 'T12:00:00').toLocaleDateString('es-MX', {weekday: 'short'}),
+                        max: Math.round(daily.temperature_2m_max[i+1]),
+                        min: Math.round(daily.temperature_2m_min[i+1])
+                    }))
+                };
+            } catch (e) { return null; }
+        }
+        function weatherCodeToText(code) {
+            const map = {0:'Despejado',1:'Mayormente despejado',2:'Parcialmente nublado',3:'Nublado',45:'Niebla',61:'Lluvia',80:'Chubascos',95:'Tormenta'};
+            return map[code] || 'Variable';
+        }
+
+        function tryConvert(text) {
+            const lower = text.toLowerCase().replace(/,/g, '.');
+            let m;
+            m = lower.match(/([\d.]+)\s*(kilometros|kilómetros|km).*(milla|millas)/);
+            if (m) return `${m[1]} km = ${(parseFloat(m[1])*0.621371).toFixed(2)} millas`;
+            m = lower.match(/([\d.]+)\s*(milla|millas).*(kilometro|kilómetro|km)/);
+            if (m) return `${m[1]} millas = ${(parseFloat(m[1])*1.60934).toFixed(2)} km`;
+            m = lower.match(/([\d.]+)\s*(grados?\s*)?(celsius|centigrados|c)\b.*(fahrenheit|f)\b/);
+            if (m) return `${m[1]}°C = ${((parseFloat(m[1])*9/5)+32).toFixed(1)}°F`;
+            m = lower.match(/([\d.]+)\s*(grados?\s*)?(fahrenheit|f)\b.*(celsius|centigrados|c)\b/);
+            if (m) return `${m[1]}°F = ${((parseFloat(m[1])-32)*5/9).toFixed(1)}°C`;
+            m = lower.match(/([\d.]+)\s*(kilos?|kg).*(libra|libras|lb)/);
+            if (m) return `${m[1]} kg = ${(parseFloat(m[1])*2.20462).toFixed(2)} libras`;
+            m = lower.match(/([\d.]+)\s*(libra|libras|lb).*(kilo|kilos|kg)/);
+            if (m) return `${m[1]} libras = ${(parseFloat(m[1])/2.20462).toFixed(2)} kg`;
+            m = lower.match(/([\d.]+)\s*(metros?|m)\b.*(pie|pies|ft)/);
+            if (m) return `${m[1]} m = ${(parseFloat(m[1])*3.28084).toFixed(2)} pies`;
+            m = lower.match(/([\d.]+)\s*(pie|pies|ft).*(metro|metros)/);
+            if (m) return `${m[1]} pies = ${(parseFloat(m[1])/3.28084).toFixed(2)} m`;
+            return null;
+        }
+
+        function tryCalculate(expr) {
+            try {
+                let clean = expr.toLowerCase()
+                    .replace(/por|x|×/g, '*')
+                    .replace(/entre|÷/g, '/')
+                    .replace(/más|\+/g, '+')
+                    .replace(/menos|−/g, '-')
+                    .replace(/al cuadrado/g, '**2')
+                    .replace(/raíz de|raiz de/g, 'Math.sqrt(')
+                    .replace(/[^0-9+\-*/().\sMathsqrt]/g, '');
+                if (clean.includes('Math.sqrt') && !clean.includes(')')) clean += ')';
+                const result = Function('"use strict"; return (' + clean + ')')();
+                if (typeof result === 'number' && isFinite(result)) return result;
+            } catch(e) {}
+            return null;
+        }
+
+        async function handleLocalCommand(comando) {
+            const lower = comando.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+            if (lower.includes('modo sarcastico') || lower.includes('modo sarcástico')) {
+                setPersonality('sarcastico');
+                addMessage('NEXUS: Modo sarcástico activado.', 'nexus');
+                speak('Modo sarcástico activado');
+                return true;
+            }
+            if (lower.includes('modo formal')) {
+                setPersonality('formal');
+                addMessage('NEXUS: Modo formal activado.', 'nexus');
+                speak('Modo formal activado');
+                return true;
+            }
+            if (lower.includes('modo motivador')) {
+                setPersonality('motivador');
+                addMessage('NEXUS: Modo motivador activado.', 'nexus');
+                speak('Modo motivador activado');
+                return true;
+            }
+            if (lower.includes('modo normal')) {
+                setPersonality('normal');
+                addMessage('NEXUS: Modo especialista activado.', 'nexus');
+                speak('Modo especialista');
+                return true;
+            }
+
+            if (/(callate|cállate|silencio|para|stop|basta)/.test(lower)) {
+                window.speechSynthesis.cancel();
+                stopTimer();
+                addMessage('NEXUS: De acuerdo.', 'nexus');
+                setState('listening');
+                return true;
+            }
+
+            if (/(que hora|qué hora|hora es)/.test(lower)) {
+                const hora = new Date().toLocaleTimeString('es-MX', {hour:'2-digit', minute:'2-digit'});
+                addMessage('NEXUS: Son las ' + hora, 'nexus');
+                showCard(hora, 'HORA ACTUAL');
+                speak('Son las ' + hora);
+                return true;
+            }
+
+            if (/(que dia|qué día|fecha)/.test(lower)) {
+                const fecha = new Date().toLocaleDateString('es-MX', {weekday:'long', day:'numeric', month:'long'});
+                addMessage('NEXUS: Hoy es ' + fecha, 'nexus');
+                showCard(new Date().getDate().toString(), fecha.toUpperCase());
+                speak('Hoy es ' + fecha);
+                return true;
+            }
+
+            if (/(clima|tiempo|temperatura)/.test(lower)) {
+                addMessage('NEXUS: Consultando clima...', 'nexus');
+                setState('processing');
+                const cityMatch = lower.match(/(?:en|de)\s+([a-záéíóúñü\s]{2,})$/i);
+                const w = await getWeather(cityMatch ? cityMatch[1].trim() : null);
+                if (w) {
+                    const txt = `En ${w.name}: ${w.temp}°, ${w.desc}. Máx ${w.max}° / Mín ${w.min}°.`;
+                    const sub = w.forecast.map(f => `${f.day}: ${f.max}°/${f.min}°`).join(' · ');
+                    addMessage('NEXUS: ' + txt, 'nexus');
+                    showCard(w.temp + '°', w.desc.toUpperCase(), `Máx ${w.max}°  Mín ${w.min}°\n${sub}`, 11000);
+                    speak(txt);
+                } else {
+                    addMessage('NEXUS: No pude obtener el clima.', 'nexus');
+                    speak('No pude obtener el clima');
+                }
+                return true;
+            }
+
+            if (/(temporizador|timer|alarma)/.test(lower)) {
+                if (/(cancela|quita|para|detén)/.test(lower)) return stopTimer();
+                let seconds = 0;
+                const minMatch = lower.match(/(\d+)\s*(minuto|minutos|min)/);
+                const secMatch = lower.match(/(\d+)\s*(segundo|segundos|seg)/);
+                if (minMatch) seconds += parseInt(minMatch[1])*60;
+                if (secMatch) seconds += parseInt(secMatch[1]);
+                if (seconds > 0 && seconds <= 7200) {
+                    startTimer(seconds);
+                    return true;
+                }
+                addMessage('NEXUS: Ejemplo: temporizador de 5 minutos', 'nexus');
+                speak('Dime cuántos minutos');
+                return true;
+            }
+
+            if (/(recuerdame|recuérdame|recordatorio)/.test(lower)) {
+                const timeMatch = lower.match(/(\d+)\s*(minuto|minutos|min)/);
+                if (timeMatch) {
+                    const mins = parseInt(timeMatch[1]);
+                    const text = comando.replace(/recuerdame|recuérdame|en \d+ minutos?|en \d+ min/gi, '').trim() || 'Recordatorio';
+                    reminders.push({ text, time: Date.now() + mins*60000 });
+                    saveReminders();
+                    addMessage(`NEXUS: Te recordaré "${text}" en ${mins} minutos.`, 'nexus');
+                    speak(`Te recordaré en ${mins} minutos`);
+                    return true;
+                }
+                return true;
+            }
+
+            if (/(cuanto es|cuánto es|calcula)/.test(lower)) {
+                const result = tryCalculate(lower.replace(/cuanto es|cuánto es|calcula/g, '').trim());
+                if (result !== null) {
+                    addMessage(`NEXUS: Resultado: ${result}`, 'nexus');
+                    showCard(String(result), 'RESULTADO');
+                    speak('El resultado es ' + result);
+                    return true;
+                }
+            }
+
+            const conv = tryConvert(lower);
+            if (conv) {
+                addMessage('NEXUS: ' + conv, 'nexus');
+                showCard(conv.split('=')[1].trim(), 'CONVERSIÓN');
+                speak(conv);
+                return true;
+            }
+
+            if (/(ayuda|que puedes hacer|qué puedes hacer|comandos)/.test(lower)) {
+                const ayuda = 'Estoy especializado en Psicología Oscura, Psicología del Marketing, Gestión de Empresas, Inteligencia Artificial, Robótica, Economía, Política y Derecho. También manejo clima, temporizadores, recordatorios, cálculos y conversiones.';
+                addMessage('NEXUS: ' + ayuda, 'nexus');
+                speak(ayuda);
+                return true;
+            }
+
+            if (/(hola|buenas|qué tal)/.test(lower)) {
+                const res = 'Hola. ¿Sobre qué tema de estrategia, poder o psicología quieres hablar?';
+                addMessage('NEXUS: ' + res, 'nexus');
+                speak(res);
+                return true;
+            }
+
+            return false;
+        }
+
+        async function enviarMensajeANexus(texto) {
+            if (!texto.trim()) return;
+            addMessage('Tú: ' + texto, 'user');
+            setState('processing');
+
+            if (await handleLocalCommand(texto)) return;
+
+            if (!navigator.onLine) {
+                const msg = 'Estoy offline. Solo funciones locales disponibles.';
+                addMessage('NEXUS: ' + msg, 'nexus');
+                speak(msg);
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/nexus/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: texto,
+                        system: SYSTEM_PROMPT
+                    })
+                });
+                const data = await response.json();
+                const respuesta = data.response || 'No pude procesar eso.';
+                addMessage('NEXUS: ' + respuesta, 'nexus');
+                speak(respuesta);
+            } catch (e) {
+                addMessage('Error de conexión.', 'system');
+                setState('listening');
+            }
+        }
+
+        const WAKE_WORDS = ['nexus','nexos','néxus','nexús','nexis'];
+        function containsWakeWord(text) {
+            const lower = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+            return WAKE_WORDS.some(w => lower.includes(w));
+        }
+        function extractCommand(text) {
+            let clean = text;
+            WAKE_WORDS.forEach(w => clean = clean.replace(new RegExp(w,'gi'),''));
+            return clean.trim().replace(/^[,.\s]+/,'');
+        }
+
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            const recognition = new SpeechRecognition();
+            recognition.lang = 'es-MX';
+            recognition.continuous = true;
+            recognition.interimResults = false;
+
+            recognition.onresult = (event) => {
+                const transcript = event.results[event.results.length-1][0].transcript.trim();
+                if (!transcript) return;
+                if (containsWakeWord(transcript)) {
+                    setState('wake');
+                    playDing('activate');
+                    const comando = extractCommand(transcript);
+                    setTimeout(() => {
+                        if (comando.length > 1) enviarMensajeANexus(comando);
+                        else { addMessage('NEXUS: Dime...', 'nexus'); speak('Dime'); }
+                    }, 380);
+                }
+            };
+            recognition.onerror = (e) => { if (e.error !== 'aborted' && e.error !== 'no-speech') console.warn(e.error); };
+            recognition.onend = () => setTimeout(() => { try{recognition.start()}catch(e){} }, 280);
+
+            try { recognition.start(); setState('listening'); }
+            catch(e) { statusText.innerText = 'MICRÓFONO NO DISPONIBLE'; setState('idle'); }
+        } else {
+            statusText.innerText = 'NAVEGADOR NO COMPATIBLE';
+        }
+
+        function sendTextMessage() {
+            const input = document.getElementById('text-input');
+            const text = input.value.trim();
+            if (!text) return;
+            input.value = '';
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            enviarMensajeANexus(text);
+        }
+        document.getElementById('text-input').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                sendTextMessage();
+            }
+        });
+
+        document.body.addEventListener('click', () => { if (audioCtx.state === 'suspended') audioCtx.resume(); }, {once:true});
+        document.body.addEventListener('touchstart', () => { if (audioCtx.state === 'suspended') audioCtx.resume(); }, {once:true});
+    </script>
+</body>
+</html>
