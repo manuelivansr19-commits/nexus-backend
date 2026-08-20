@@ -12,7 +12,7 @@ import asyncio
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("NEXUS-BACKEND")
 
-app = FastAPI(title="NEXUS AI", version="2.3.0")
+app = FastAPI(title="NEXUS AI", version="2.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,14 +27,12 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "")
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 USE_OLLAMA_ONLY = os.getenv("USE_OLLAMA_ONLY", "false").lower() == "true"
-# Incrementamos a 600 tokens para que las explicaciones técnicas (como PNL) nunca salgan cortadas
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "600"))
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY and not USE_OLLAMA_ONLY else None
 
 class ChatRequest(BaseModel):
     message: str = Field(default="", max_length=10000)
-    # Instrucción experta y estricta para el comportamiento del modelo
     system: str = Field(
         default=(
             "Eres NEXUS, un sistema avanzado de inteligencia artificial enfocado en "
@@ -53,6 +51,23 @@ async def home():
 async def health():
     return {"status": "healthy", "gemini_active": client is not None}
 
+# Endpoints requeridos por el frontend para desbloquear la pantalla de carga inicial
+@app.get("/api/nexus/status")
+async def nexus_status():
+    return {
+        "status": "online",
+        "ollama_active": bool(OLLAMA_URL),
+        "gemini_active": client is not None
+    }
+
+@app.get("/api/nexus/config")
+async def nexus_config():
+    return {
+        "model": "gemini-1.5-flash",
+        "ollama_model": OLLAMA_MODEL,
+        "use_ollama_only": USE_OLLAMA_ONLY
+    }
+
 async def call_gemini_async(prompt: str, system_instruction: str):
     if not client:
         raise Exception("Gemini no inicializado.")
@@ -64,7 +79,7 @@ async def call_gemini_async(prompt: str, system_instruction: str):
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
             max_output_tokens=MAX_OUTPUT_TOKENS,
-            temperature=0.6  # Temperatura ligeramente más baja para respuestas más precisas y estables
+            temperature=0.6
         )
     )
     if response and getattr(response, "text", None):
@@ -139,5 +154,5 @@ async def chat(request: ChatRequest, req: Request):
             "response": "NEXUS: Operación procesada con reanudación de enlace interno.",
             "provider": "error_recovery",
             "fallback": True
-        }
-        
+    }
+                                                 
