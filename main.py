@@ -40,7 +40,7 @@ GEMINI_API_KEY = os.getenv(
 
 GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
-    "gemini-2.5-flash",
+    "gemini-2.0-flash",
 ).strip()
 
 OLLAMA_URL = os.getenv(
@@ -80,7 +80,7 @@ REQUEST_TIMEOUT_SECONDS = float(
     )
 )
 
-APP_VERSION = "2.6.8"
+APP_VERSION = "2.6.9"
 
 
 # ============================================================
@@ -626,4 +626,3 @@ async def chat(
             "request_id": request_id,
         },
     )
-    
