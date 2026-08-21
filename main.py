@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from google import genai
+from google.genai import types
 from pydantic import BaseModel, Field
 
 
@@ -51,8 +52,6 @@ GEMINI_API_KEY = os.getenv(
 ).strip()
 
 
-# IMPORTANTE:
-# Esta variable de Render puede sobrescribir este valor.
 GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
     "gemini-3.7-flash",
@@ -312,10 +311,6 @@ async def lifespan(application: FastAPI):
     )
 
     logger.info(
-        "Google Search: habilitado"
-    )
-
-    logger.info(
         "Output tokens: %s",
         MAX_OUTPUT_TOKENS,
     )
@@ -404,8 +399,7 @@ def safe_error_message(
 
 
 # ============================================================
-# GEMINI 3.7 FLASH
-# INTERACTIONS API
+# GEMINI 3.7 FLASH CLIENT CALL
 # ============================================================
 
 async def call_gemini(
@@ -420,30 +414,32 @@ async def call_gemini(
         )
 
     started = time.perf_counter()
+    clean_model_name = GEMINI_MODEL.replace("models/", "").strip()
 
     try:
+        # Mapeo de nivel de pensamiento compatible con el SDK
+        t_level = types.ThinkingLevel.HIGH
+        if THINKING_LEVEL == "low":
+            t_level = types.ThinkingLevel.LOW
+        elif THINKING_LEVEL == "medium":
+            t_level = types.ThinkingLevel.MEDIUM
+        elif THINKING_LEVEL == "minimal":
+            t_level = types.ThinkingLevel.MINIMAL
 
-        interaction = (
-            await gemini_client.aio.interactions.create(
-
-                model=GEMINI_MODEL,
-
-                input=(
-                    f"{system_instruction}\n\n"
-                    f"CONSULTA DEL USUARIO:\n"
-                    f"{prompt}"
+        response = (
+            await gemini_client.aio.models.generate_content(
+                model=clean_model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    max_output_tokens=MAX_OUTPUT_TOKENS,
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level=t_level
+                    ),
+                    tools=[
+                        types.Tool(google_search=types.GoogleSearch())
+                    ],
                 ),
-
-                generation_config={
-                    "thinking_level": THINKING_LEVEL,
-                    "max_output_tokens": MAX_OUTPUT_TOKENS,
-                },
-
-                tools=[
-                    {
-                        "type": "google_search"
-                    }
-                ],
             )
         )
 
@@ -458,67 +454,20 @@ async def call_gemini(
             "Gemini ERROR | modelo=%s | "
             "thinking=%s | duración=%.2fs | "
             "tipo=%s | error=%s",
-
-            GEMINI_MODEL,
-
+            clean_model_name,
             THINKING_LEVEL,
-
             elapsed,
-
             type(error).__name__,
-
-            safe_error_message(
-                error
-            ),
+            safe_error_message(error),
         )
 
         raise
 
-    # ========================================================
-    # EXTRAER TEXTO
-    # ========================================================
-
     text = getattr(
-        interaction,
-        "output_text",
+        response,
+        "text",
         None,
     )
-
-    if not text:
-
-        # Compatibilidad adicional
-        # con versiones del SDK que devuelven
-        # outputs estructurados.
-
-        output = getattr(
-            interaction,
-            "outputs",
-            None,
-        )
-
-        if output:
-
-            fragments = []
-
-            for item in output:
-
-                item_text = getattr(
-                    item,
-                    "text",
-                    None,
-                )
-
-                if item_text:
-
-                    fragments.append(
-                        item_text
-                    )
-
-            if fragments:
-
-                text = "\n".join(
-                    fragments
-                )
 
     if not text or not text.strip():
 
@@ -534,11 +483,8 @@ async def call_gemini(
     logger.info(
         "Gemini OK | modelo=%s | "
         "thinking=%s | duración=%.2fs",
-
-        GEMINI_MODEL,
-
+        clean_model_name,
         THINKING_LEVEL,
-
         elapsed,
     )
 
@@ -1076,4 +1022,4 @@ async def chat(
             "request_id":
                 request_id,
         },
-        )
+    )
