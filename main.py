@@ -10,29 +10,39 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from google import genai
-from google.genai import types
 from pydantic import BaseModel, Field
 
 
 # ============================================================
-# NEXUS AI — CONFIGURACIÓN
+# NEXUS AI 3.1
+# Gemini 3.7 Flash + Thinking HIGH + Google Search
 # ============================================================
 
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.1.0"
+
+
+# ============================================================
+# LOGGING
+# ============================================================
 
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    level=os.getenv(
+        "LOG_LEVEL",
+        "INFO",
+    ).upper(),
     format=(
         "%(asctime)s | %(levelname)s | "
         "%(name)s | %(message)s"
     ),
 )
 
-logger = logging.getLogger("NEXUS-BACKEND")
+logger = logging.getLogger(
+    "NEXUS-BACKEND"
+)
 
 
 # ============================================================
-# VARIABLES DE ENTORNO
+# ENVIRONMENT
 # ============================================================
 
 GEMINI_API_KEY = os.getenv(
@@ -40,48 +50,62 @@ GEMINI_API_KEY = os.getenv(
     "",
 ).strip()
 
-# Modelo principal de NEXUS
+
+# IMPORTANTE:
+# Esta variable de Render puede sobrescribir este valor.
 GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
     "gemini-3.7-flash",
 ).strip()
 
-# Nivel de razonamiento
+
 THINKING_LEVEL = os.getenv(
     "THINKING_LEVEL",
     "high",
 ).strip().lower()
 
-OLLAMA_URL = os.getenv(
-    "OLLAMA_URL",
-    "",
-).strip()
 
-OLLAMA_API_KEY = os.getenv(
-    "OLLAMA_API_KEY",
-    "",
-).strip()
-
-OLLAMA_MODEL = os.getenv(
-    "OLLAMA_MODEL",
-    "llama3",
-).strip()
-
-USE_OLLAMA_ONLY = (
-    os.getenv(
-        "USE_OLLAMA_ONLY",
-        "false",
-    ).strip().lower()
-    in {"1", "true", "yes", "on"}
-)
-
-# Salida amplia para análisis complejos
 MAX_OUTPUT_TOKENS = int(
     os.getenv(
         "MAX_OUTPUT_TOKENS",
         "16384",
     )
 )
+
+
+OLLAMA_URL = os.getenv(
+    "OLLAMA_URL",
+    "",
+).strip()
+
+
+OLLAMA_API_KEY = os.getenv(
+    "OLLAMA_API_KEY",
+    "",
+).strip()
+
+
+OLLAMA_MODEL = os.getenv(
+    "OLLAMA_MODEL",
+    "llama3",
+).strip()
+
+
+USE_OLLAMA_ONLY = (
+    os.getenv(
+        "USE_OLLAMA_ONLY",
+        "false",
+    )
+    .strip()
+    .lower()
+    in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+)
+
 
 REQUEST_TIMEOUT_SECONDS = float(
     os.getenv(
@@ -92,83 +116,105 @@ REQUEST_TIMEOUT_SECONDS = float(
 
 
 # ============================================================
-# SYSTEM PROMPT DE NEXUS
+# SYSTEM PROMPT
 # ============================================================
 
 DEFAULT_SYSTEM = """
 Eres NEXUS, una inteligencia artificial personal
-avanzada orientada a razonamiento, estrategia,
-análisis profundo, investigación, tecnología,
-negocios, psicología aplicada y desarrollo de proyectos.
+avanzada orientada al razonamiento, análisis profundo,
+estrategia, investigación, tecnología, negocios,
+psicología aplicada y desarrollo de proyectos.
 
-Tu función NO es responder como un chatbot superficial.
+NO eres un chatbot superficial.
 
-Debes analizar cada consulta antes de responder.
+Tu trabajo es ayudar al usuario a comprender problemas
+complejos, descubrir patrones, evaluar escenarios y
+convertir análisis en acciones concretas.
 
-REGLAS:
+MODO DE OPERACIÓN:
 
-1. Identifica primero qué está preguntando realmente
-   el usuario.
+1. Comprende primero la intención real de la consulta.
 
-2. Divide problemas complejos en componentes.
+2. Analiza el problema antes de responder.
 
-3. Analiza causas, consecuencias, riesgos,
-   oportunidades y escenarios.
+3. Divide los problemas complejos en componentes.
 
-4. Diferencia claramente:
+4. Identifica:
    - hechos
-   - inferencias
-   - hipótesis
-   - recomendaciones
-
-5. Si falta información importante, indícalo.
-
-6. No inventes datos.
-
-7. Si la pregunta requiere información actual,
-   utiliza búsqueda web cuando esté disponible.
-
-8. Para problemas estratégicos, presenta:
-   - diagnóstico
-   - análisis
-   - escenarios
+   - supuestos
+   - variables
    - riesgos
-   - recomendación
-   - siguiente acción
+   - oportunidades
+   - consecuencias
+   - escenarios
 
-9. Para problemas técnicos:
-   - identifica el problema
-   - explica la causa
-   - propone solución
-   - entrega implementación concreta
-   - verifica posibles errores
+5. Diferencia hechos comprobados de inferencias.
 
-10. No reduzcas una pregunta compleja a una
-    respuesta superficial solamente para ser breve.
+6. No inventes información.
 
-11. Puedes responder extensamente cuando la
-    complejidad lo requiera.
+7. Cuando una información pueda haber cambiado,
+   utiliza búsqueda web si está disponible.
 
-12. Responde siempre en español salvo que el usuario
-    solicite otro idioma.
+8. Cuando hagas análisis estratégico utiliza,
+   cuando corresponda:
 
-13. Sé directo. Evita relleno, frases genéricas
-    y repeticiones.
+   DIAGNÓSTICO
+   ANÁLISIS
+   ESCENARIOS
+   RIESGOS
+   OPORTUNIDADES
+   RECOMENDACIÓN
+   SIGUIENTE ACCIÓN
 
-14. Nunca reveles cadenas internas de razonamiento
-    privadas. Presenta únicamente conclusiones,
-    explicaciones y justificaciones útiles.
+9. Cuando analices tecnología o código:
 
-15. Cuando existan varias soluciones, compáralas
-    y recomienda una.
+   PROBLEMA
+   CAUSA
+   SOLUCIÓN
+   IMPLEMENTACIÓN
+   VERIFICACIÓN
 
-Tu prioridad es:
-PRECISIÓN → RAZONAMIENTO → CONTEXTO → ACCIÓN.
+10. Cuando existan varias alternativas,
+    compáralas y recomienda una.
+
+11. No reduzcas una consulta compleja
+    a una respuesta superficial.
+
+12. Puedes responder extensamente cuando
+    la complejidad lo requiera.
+
+13. Responde siempre en español salvo
+    que el usuario solicite otro idioma.
+
+14. Sé directo y evita relleno.
+
+15. No repitas innecesariamente la pregunta
+    del usuario.
+
+16. Si falta información crítica,
+    indícalo claramente y trabaja con
+    los supuestos disponibles.
+
+17. No expongas cadenas internas de pensamiento
+    privadas. Entrega conclusiones, análisis,
+    evidencia y justificaciones útiles.
+
+PRIORIDADES:
+
+PRECISIÓN
+>
+RAZONAMIENTO
+>
+CONTEXTO
+>
+EVIDENCIA
+>
+ACCIÓN
 """
 
 
 # ============================================================
-# MODELO DE DATOS
+# REQUEST MODEL
 # ============================================================
 
 class ChatRequest(BaseModel):
@@ -185,7 +231,7 @@ class ChatRequest(BaseModel):
 
 
 # ============================================================
-# CLIENTE GEMINI
+# GEMINI CLIENT
 # ============================================================
 
 gemini_client: Optional[genai.Client] = None
@@ -205,7 +251,7 @@ def initialize_gemini():
 
     if not GEMINI_API_KEY:
 
-        logger.warning(
+        logger.error(
             "GEMINI_API_KEY no está configurada."
         )
 
@@ -226,7 +272,7 @@ def initialize_gemini():
     except Exception:
 
         logger.exception(
-            "Error inicializando Gemini."
+            "No se pudo inicializar Gemini."
         )
 
         gemini_client = None
@@ -240,10 +286,10 @@ initialize_gemini()
 # ============================================================
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(application: FastAPI):
 
     logger.info(
-        "============================================"
+        "=============================================="
     )
 
     logger.info(
@@ -270,13 +316,18 @@ async def lifespan(app: FastAPI):
     )
 
     logger.info(
-        "============================================"
+        "Output tokens: %s",
+        MAX_OUTPUT_TOKENS,
+    )
+
+    logger.info(
+        "=============================================="
     )
 
     yield
 
     logger.info(
-        "NEXUS AI detenido."
+        "NEXUS detenido."
     )
 
 
@@ -305,7 +356,7 @@ app.add_middleware(
 
 
 # ============================================================
-# UTILIDADES
+# ERROR SANITIZATION
 # ============================================================
 
 def safe_error_message(
@@ -325,11 +376,15 @@ def safe_error_message(
             f"con código {code}."
         )
 
-    text = str(error).strip()
+    text = str(
+        error
+    ).strip()
 
     if not text:
 
-        return "El proveedor no respondió."
+        return (
+            "El proveedor no respondió."
+        )
 
     secrets = [
         GEMINI_API_KEY,
@@ -349,7 +404,8 @@ def safe_error_message(
 
 
 # ============================================================
-# GEMINI
+# GEMINI 3.7 FLASH
+# INTERACTIONS API
 # ============================================================
 
 async def call_gemini(
@@ -367,46 +423,27 @@ async def call_gemini(
 
     try:
 
-        response = (
-            await gemini_client.aio.models.generate_content(
+        interaction = (
+            await gemini_client.aio.interactions.create(
+
                 model=GEMINI_MODEL,
 
-                contents=prompt,
-
-                config=types.GenerateContentConfig(
-
-                    system_instruction=(
-                        system_instruction
-                    ),
-
-                    max_output_tokens=(
-                        MAX_OUTPUT_TOKENS
-                    ),
-
-                    # ==================================================
-                    # RAZONAMIENTO PROFUNDO
-                    # ==================================================
-
-                    thinking_config=(
-                        types.ThinkingConfig(
-                            thinking_level=(
-                                THINKING_LEVEL
-                            )
-                        )
-                    ),
-
-                    # ==================================================
-                    # BÚSQUEDA WEB
-                    # ==================================================
-
-                    tools=[
-                        types.Tool(
-                            google_search=(
-                                types.GoogleSearch()
-                            )
-                        )
-                    ],
+                input=(
+                    f"{system_instruction}\n\n"
+                    f"CONSULTA DEL USUARIO:\n"
+                    f"{prompt}"
                 ),
+
+                generation_config={
+                    "thinking_level": THINKING_LEVEL,
+                    "max_output_tokens": MAX_OUTPUT_TOKENS,
+                },
+
+                tools=[
+                    {
+                        "type": "google_search"
+                    }
+                ],
             )
         )
 
@@ -419,20 +456,69 @@ async def call_gemini(
 
         logger.error(
             "Gemini ERROR | modelo=%s | "
-            "duración=%.2fs | tipo=%s | error=%s",
+            "thinking=%s | duración=%.2fs | "
+            "tipo=%s | error=%s",
+
             GEMINI_MODEL,
+
+            THINKING_LEVEL,
+
             elapsed,
+
             type(error).__name__,
-            safe_error_message(error),
+
+            safe_error_message(
+                error
+            ),
         )
 
         raise
 
+    # ========================================================
+    # EXTRAER TEXTO
+    # ========================================================
+
     text = getattr(
-        response,
-        "text",
+        interaction,
+        "output_text",
         None,
     )
+
+    if not text:
+
+        # Compatibilidad adicional
+        # con versiones del SDK que devuelven
+        # outputs estructurados.
+
+        output = getattr(
+            interaction,
+            "outputs",
+            None,
+        )
+
+        if output:
+
+            fragments = []
+
+            for item in output:
+
+                item_text = getattr(
+                    item,
+                    "text",
+                    None,
+                )
+
+                if item_text:
+
+                    fragments.append(
+                        item_text
+                    )
+
+            if fragments:
+
+                text = "\n".join(
+                    fragments
+                )
 
     if not text or not text.strip():
 
@@ -448,8 +534,11 @@ async def call_gemini(
     logger.info(
         "Gemini OK | modelo=%s | "
         "thinking=%s | duración=%.2fs",
+
         GEMINI_MODEL,
+
         THINKING_LEVEL,
+
         elapsed,
     )
 
@@ -496,14 +585,20 @@ async def call_ollama(
         "stream": False,
 
         "options": {
-            "num_predict": MAX_OUTPUT_TOKENS,
+
+            "num_predict":
+                MAX_OUTPUT_TOKENS,
         },
     }
 
     timeout = httpx.Timeout(
+
         connect=15.0,
+
         read=REQUEST_TIMEOUT_SECONDS,
+
         write=15.0,
+
         pool=15.0,
     )
 
@@ -516,8 +611,11 @@ async def call_ollama(
         ) as client:
 
             response = await client.post(
+
                 OLLAMA_URL,
+
                 json=payload,
+
                 headers=headers,
             )
 
@@ -533,11 +631,17 @@ async def call_ollama(
         )
 
         logger.error(
+
             "Ollama ERROR | modelo=%s | "
             "duración=%.2fs | error=%s",
+
             OLLAMA_MODEL,
+
             elapsed,
-            safe_error_message(error),
+
+            safe_error_message(
+                error
+            ),
         )
 
         raise
@@ -559,8 +663,12 @@ async def call_ollama(
     )
 
     logger.info(
-        "Ollama OK | modelo=%s | duración=%.2fs",
+
+        "Ollama OK | modelo=%s | "
+        "duración=%.2fs",
+
         OLLAMA_MODEL,
+
         elapsed,
     )
 
@@ -604,25 +712,22 @@ async def health():
 
         "model": GEMINI_MODEL,
 
-        "thinking_level": THINKING_LEVEL,
+        "thinking_level":
+            THINKING_LEVEL,
 
-        "max_output_tokens": (
-            MAX_OUTPUT_TOKENS
-        ),
+        "max_output_tokens":
+            MAX_OUTPUT_TOKENS,
 
-        "gemini_active": (
-            gemini_client is not None
-        ),
+        "gemini_active":
+            gemini_client is not None,
 
         "google_search": True,
 
-        "ollama_configured": bool(
-            OLLAMA_URL
-        ),
+        "ollama_configured":
+            bool(OLLAMA_URL),
 
-        "use_ollama_only": (
-            USE_OLLAMA_ONLY
-        ),
+        "use_ollama_only":
+            USE_OLLAMA_ONLY,
     }
 
 
@@ -643,21 +748,19 @@ async def nexus_status():
 
         "model": GEMINI_MODEL,
 
-        "thinking_level": THINKING_LEVEL,
+        "thinking_level":
+            THINKING_LEVEL,
 
-        "gemini_active": (
-            gemini_client is not None
-        ),
+        "gemini_active":
+            gemini_client is not None,
 
         "google_search": True,
 
-        "ollama_active": bool(
-            OLLAMA_URL
-        ),
+        "ollama_active":
+            bool(OLLAMA_URL),
 
-        "use_ollama_only": (
-            USE_OLLAMA_ONLY
-        ),
+        "use_ollama_only":
+            USE_OLLAMA_ONLY,
     }
 
 
@@ -676,19 +779,19 @@ async def nexus_config():
 
         "model": GEMINI_MODEL,
 
-        "thinking_level": THINKING_LEVEL,
+        "thinking_level":
+            THINKING_LEVEL,
 
-        "max_output_tokens": (
-            MAX_OUTPUT_TOKENS
-        ),
+        "max_output_tokens":
+            MAX_OUTPUT_TOKENS,
 
         "google_search": True,
 
-        "ollama_model": OLLAMA_MODEL,
+        "ollama_model":
+            OLLAMA_MODEL,
 
-        "fallback_enabled": bool(
-            OLLAMA_URL
-        ),
+        "fallback_enabled":
+            bool(OLLAMA_URL),
     }
 
 
@@ -708,15 +811,31 @@ async def chat(
 
     started = time.perf_counter()
 
+    remote_ip = (
+
+        req.client.host
+
+        if req.client
+
+        else "unknown"
+    )
+
     logger.info(
-        "[%s] Consulta recibida | chars=%d",
+
+        "[%s] Consulta recibida | "
+        "ip=%s | chars=%d",
+
         request_id,
+
+        remote_ip,
+
         len(request.message),
     )
 
-    # --------------------------------------------------------
-    # VALIDACIÓN
-    # --------------------------------------------------------
+
+    # ========================================================
+    # EMPTY MESSAGE
+    # ========================================================
 
     if not request.message.strip():
 
@@ -734,16 +853,19 @@ async def chat(
             "request_id": request_id,
         }
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # OLLAMA ONLY
-    # --------------------------------------------------------
+    # ========================================================
 
     if USE_OLLAMA_ONLY:
 
         try:
 
             text = await call_ollama(
+
                 request.message,
+
                 request.system,
             )
 
@@ -757,37 +879,53 @@ async def chat(
 
                 "fallback": False,
 
-                "request_id": request_id,
+                "request_id":
+                    request_id,
             }
 
         except Exception as error:
 
+            logger.exception(
+
+                "[%s] Ollama exclusivo falló",
+
+                request_id,
+            )
+
             raise HTTPException(
+
                 status_code=503,
 
                 detail={
-                    "message": (
-                        "Ollama no está disponible."
-                    ),
 
-                    "provider": "ollama",
+                    "message":
+                        "Ollama no está disponible.",
 
-                    "request_id": request_id,
+                    "provider":
+                        "ollama",
 
-                    "error": safe_error_message(
-                        error
-                    ),
+                    "request_id":
+                        request_id,
+
+                    "error":
+                        safe_error_message(
+                            error
+                        ),
                 },
+
             ) from error
 
-    # --------------------------------------------------------
-    # GEMINI
-    # --------------------------------------------------------
+
+    # ========================================================
+    # GEMINI PRINCIPAL
+    # ========================================================
 
     try:
 
         text = await call_gemini(
+
             request.message,
+
             request.system,
         )
 
@@ -797,9 +935,12 @@ async def chat(
         )
 
         logger.info(
-            "[%s] RESPUESTA COMPLETA | "
-            "provider=gemini | duración=%.2fs",
+
+            "[%s] Gemini completo | "
+            "duración=%.2fs",
+
             request_id,
+
             elapsed,
         )
 
@@ -813,33 +954,45 @@ async def chat(
 
             "fallback": False,
 
-            "reasoning": THINKING_LEVEL,
+            "model":
+                GEMINI_MODEL,
+
+            "thinking":
+                THINKING_LEVEL,
 
             "web_search": True,
 
-            "request_id": request_id,
+            "request_id":
+                request_id,
         }
+
 
     except Exception as gemini_error:
 
         logger.warning(
+
             "[%s] Gemini falló | %s",
+
             request_id,
+
             safe_error_message(
                 gemini_error
             ),
         )
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # OLLAMA FALLBACK
-    # --------------------------------------------------------
+    # ========================================================
 
     if OLLAMA_URL:
 
         try:
 
             text = await call_ollama(
+
                 request.message,
+
                 request.system,
             )
 
@@ -849,9 +1002,12 @@ async def chat(
             )
 
             logger.info(
-                "[%s] FALLBACK OLLAMA | "
+
+                "[%s] Ollama fallback | "
                 "duración=%.2fs",
+
                 request_id,
+
                 elapsed,
             )
 
@@ -865,22 +1021,42 @@ async def chat(
 
                 "fallback": True,
 
-                "request_id": request_id,
+                "request_id":
+                    request_id,
             }
 
         except Exception as ollama_error:
 
-            logger.error(
-                "[%s] Ollama también falló | %s",
+            logger.exception(
+
+                "[%s] Ollama fallback falló | %s",
+
                 request_id,
+
                 safe_error_message(
                     ollama_error
                 ),
             )
 
-    # --------------------------------------------------------
-    # ERROR FINAL
-    # --------------------------------------------------------
+
+    # ========================================================
+    # TODO FALLÓ
+    # ========================================================
+
+    elapsed = (
+        time.perf_counter()
+        - started
+    )
+
+    logger.error(
+
+        "[%s] Todos los proveedores fallaron | "
+        "duración=%.2fs",
+
+        request_id,
+
+        elapsed,
+    )
 
     raise HTTPException(
 
@@ -897,6 +1073,7 @@ async def chat(
 
             "fallback": True,
 
-            "request_id": request_id,
+            "request_id":
+                request_id,
         },
         )
