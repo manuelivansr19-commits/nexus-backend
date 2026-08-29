@@ -3,3 +3,5 @@ uvicorn
 httpx
 pydantic
 google-genai>=1.36.0
+
+# force redeploy
