@@ -1,19 +1,28 @@
 """
-NEXUS Ω — Servidor principal v3.4.0
+NEXUS Ω — Servidor principal v3.5.0
 
-Rutas EXISTENTES (sin cambios de contrato):
+main.py es solo la capa HTTP/API.
+Toda la lógica vive en NexusCore.
+
+Rutas PRESERVADAS (contrato inalterado):
   GET  /                     → Frontend
   HEAD /                     → Health probe Render
   GET  /health               → Estado del sistema
   GET  /api/nexus/status     → Estado del router
   GET  /api/nexus/config     → Configuración pública
-  POST /api/nexus/chat       → Chat (ahora acepta history)
+  POST /api/nexus/chat       → Chat principal
   GET  /sw.js                → Service Worker
 
-Rutas NUEVAS (AURA Brain):
-  GET  /api/aura/status      → Estado del cerebro AURA
-  POST /api/aura/perceive    → Inyectar evento de percepción (simulación)
-  GET  /api/aura/simulate    → Ejecutar tick de simulación
+Rutas AURA Brain (v3.4.0):
+  GET  /api/aura/status      → Estado del cerebro
+  POST /api/aura/perceive    → Inyectar percepción
+  POST /api/aura/simulate    → Simulación
+
+Rutas NUEVAS Core v3.5.0:
+  GET  /api/nexus/memory     → Estado de memoria
+  POST /api/nexus/memory/clear → Limpiar memoria
+  GET  /api/nexus/tools      → Herramientas disponibles
+  GET  /api/nexus/intent     → Clasificar intent (debug)
 """
 
 from __future__ import annotations
@@ -30,39 +39,32 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from backend.config import (
-    ALL_SECRETS,
-    APP_VERSION,
-    DEFAULT_SYSTEM,
-    MAX_HISTORY_TURNS,
-    MAX_OUTPUT_TOKENS,
-    NEXUS_LOCAL_ONLY,
-    REQUEST_TIMEOUT_SECONDS,
-    USE_OLLAMA_ONLY,
+    ALL_SECRETS, APP_VERSION, DEFAULT_SYSTEM,
+    MAX_HISTORY_TURNS, MAX_OUTPUT_TOKENS,
+    MEMORY_DB_PATH, NEXUS_LOCAL_ONLY,
+    REQUEST_TIMEOUT_SECONDS, USE_OLLAMA_ONLY,
     logger,
 )
 from backend.providers import (
-    GeminiProvider,
-    GenerateRequest,
-    GroqProvider,
-    LocalProvider,
-    Message,
-    OllamaProvider,
-    OpenRouterProvider,
+    GeminiProvider, GenerateRequest, GroqProvider,
+    LocalProvider, Message, OllamaProvider, OpenRouterProvider,
 )
 from backend.router import ModelRouter
 
-# AURA Brain
-from backend.core.perception import Modality, Perception, PerceptionEvent
-from backend.core.memory import Memory, MemoryType
-from backend.core.reasoning import Reasoning
-from backend.core.planning import Planner
-from backend.core.action import ActionExecutor
+# Core
+from backend.core.nexus import NexusCore
+from backend.core.intent import IntentRouter
+from backend.core.context import ContextManager
+from backend.core.memory import Memory, MemoryType, SQLiteMemoryStore, RAMMemoryStore
+from backend.core.executor import Executor
 from backend.core.evaluation import Evaluator
+from backend.core.perception import Modality, Perception, PerceptionEvent
 from backend.simulation.engine import SimulationEngine, SimulationScenario
+from backend.tools.builtin import create_default_registry
 
 
 # ============================================================
-# REQUEST / RESPONSE MODELS
+# MODELS
 # ============================================================
 
 class HistoryMessage(BaseModel):
@@ -74,19 +76,23 @@ class ChatRequest(BaseModel):
     message: str = Field(default="", max_length=30000)
     system:  str = Field(default=DEFAULT_SYSTEM, max_length=12000)
     history: Optional[list[HistoryMessage]] = None
+    project: str = Field(default="", max_length=100)
 
 
 class PerceiveRequest(BaseModel):
-    modality: str = Field(..., description="text|audio|imu|vision|lidar|system")
-    data:     Any = Field(...)
-    source:   str = Field(default="api")
+    modality:   str = Field(...)
+    data:       Any = Field(...)
+    source:     str = Field(default="api")
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class SimulateRequest(BaseModel):
-    scenario: str = Field(default="idle",
-                          description="idle|exploring|conversation|obstacle")
+    scenario: str = Field(default="idle")
     ticks:    int = Field(default=1, ge=1, le=20)
+
+
+class IntentDebugRequest(BaseModel):
+    message: str = Field(..., max_length=5000)
 
 
 # ============================================================
@@ -108,17 +114,13 @@ def new_request_id() -> str:
 # GLOBALS
 # ============================================================
 
-router:      Optional[ModelRouter] = None
-http_client: Optional[httpx.AsyncClient] = None
+model_router:  Optional[ModelRouter]  = None
+http_client:   Optional[httpx.AsyncClient] = None
+nexus_core:    Optional[NexusCore]    = None
 
-# AURA Brain components (singletons)
-perception:  Perception     = Perception()
-memory:      Memory         = Memory()
-reasoning:   Reasoning      = Reasoning()
-planner:     Planner        = Planner()
-executor:    ActionExecutor = ActionExecutor()
-evaluator:   Evaluator      = Evaluator()
-simulation:  SimulationEngine = SimulationEngine()
+# AURA Brain
+perception:    Perception      = Perception()
+simulation:    SimulationEngine = SimulationEngine()
 
 
 # ============================================================
@@ -127,8 +129,9 @@ simulation:  SimulationEngine = SimulationEngine()
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    global router, http_client
+    global model_router, http_client, nexus_core
 
+    # HTTP client compartido
     http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(
             connect=15.0, read=REQUEST_TIMEOUT_SECONDS,
@@ -136,27 +139,56 @@ async def lifespan(application: FastAPI):
         ),
     )
 
+    # Model providers
     providers = [
-        LocalProvider(http_client),         # Motor local (AURA)
-        GeminiProvider(),                   # External primary
-        OpenRouterProvider(http_client),    # External fallback 1
-        GroqProvider(http_client),          # External fallback 2
-        OllamaProvider(http_client),        # External fallback 3
+        LocalProvider(http_client),
+        GeminiProvider(),
+        OpenRouterProvider(http_client),
+        GroqProvider(http_client),
+        OllamaProvider(http_client),
     ]
+    model_router = ModelRouter(providers)
 
-    router = ModelRouter(providers)
+    # Memory (SQLite en dev, RAM si falla)
+    try:
+        store  = SQLiteMemoryStore(MEMORY_DB_PATH)
+        memory = Memory(store)
+        logger.info("Memory backend: SQLite (%s)", MEMORY_DB_PATH)
+    except Exception:
+        memory = Memory(RAMMemoryStore())
+        logger.warning("Memory backend: RAM (SQLite no disponible)")
 
-    status = router.provider_status()
+    # Tool registry
+    registry = create_default_registry(memory)
+
+    # Core components
+    intent_router   = IntentRouter(registry=registry)
+    context_manager = ContextManager(memory=memory)
+    executor        = Executor(registry=registry, memory=memory)
+    evaluator       = Evaluator()
+
+    # NexusCore — cerebro principal
+    nexus_core = NexusCore(
+        model_router=model_router,
+        memory=memory,
+        intent_router=intent_router,
+        context_manager=context_manager,
+        executor=executor,
+        evaluator=evaluator,
+    )
+
+    status = model_router.provider_status()
     logger.info("=" * 50)
     logger.info("NEXUS Ω v%s iniciado", APP_VERSION)
     logger.info("Modo local: %s", NEXUS_LOCAL_ONLY)
+    logger.info("Tools: %s", [t.name for t in registry.list()])
     for name, configured in status.items():
         logger.info("  %-12s %s", name + ":", "✓" if configured else "✗")
     logger.info("=" * 50)
 
     yield
 
-    await router.shutdown()
+    await model_router.shutdown()
     await http_client.aclose()
     logger.info("NEXUS Ω detenido.")
 
@@ -175,7 +207,7 @@ app.add_middleware(
 
 
 # ============================================================
-# RUTAS EXISTENTES (contrato inalterado)
+# RUTAS EXISTENTES — contrato inalterado
 # ============================================================
 
 @app.get("/")
@@ -190,47 +222,47 @@ async def home_head():
 
 @app.get("/health")
 async def health():
-    assert router is not None
+    assert model_router is not None
     return {
         "status":            "healthy",
         "system":            "NEXUS",
         "version":           APP_VERSION,
-        "providers":         router.provider_status(),
-        "models":            router.model_names(),
+        "providers":         model_router.provider_status(),
+        "models":            model_router.model_names(),
         "max_output_tokens": MAX_OUTPUT_TOKENS,
         "ollama_only":       USE_OLLAMA_ONLY,
-        "local_mode":        router.local_mode_active(),
+        "local_mode":        model_router.local_mode_active(),
     }
 
 
 @app.get("/api/nexus/status")
 async def nexus_status():
-    assert router is not None
+    assert model_router is not None
     return {
         "status":            "online",
         "system":            "NEXUS",
         "version":           APP_VERSION,
-        "router":            router.provider_status(),
+        "router":            model_router.provider_status(),
         "max_output_tokens": MAX_OUTPUT_TOKENS,
-        "local_mode":        router.local_mode_active(),
+        "local_mode":        model_router.local_mode_active(),
     }
 
 
 @app.get("/api/nexus/config")
 async def nexus_config():
-    assert router is not None
+    assert model_router is not None
     return {
-        "version":        APP_VERSION,
-        **{f"{n}_model": m for n, m in router.model_names().items()},
+        "version":           APP_VERSION,
+        **{f"{n}_model": m for n, m in model_router.model_names().items()},
         "max_output_tokens": MAX_OUTPUT_TOKENS,
-        "multi_provider": True,
-        "local_mode":     router.local_mode_active(),
+        "multi_provider":    True,
+        "local_mode":        model_router.local_mode_active(),
     }
 
 
 @app.post("/api/nexus/chat")
 async def chat(request: ChatRequest, req: Request):
-    assert router is not None
+    assert nexus_core is not None
 
     request_id = new_request_id()
     started    = time.perf_counter()
@@ -241,6 +273,7 @@ async def chat(request: ChatRequest, req: Request):
         request_id, remote_ip, len(request.message),
     )
 
+    # Mensaje vacío → respuesta estática
     if not request.message.strip():
         return {
             "success":    True,
@@ -250,49 +283,43 @@ async def chat(request: ChatRequest, req: Request):
             "request_id": request_id,
         }
 
-    history: list[Message] = []
-    if request.history:
-        history = [
-            Message(role=m.role, content=m.content)
-            for m in request.history[-MAX_HISTORY_TURNS:]
-        ]
-
     system_instruction = request.system.strip() or DEFAULT_SYSTEM
 
-    gen_request = GenerateRequest(
-        prompt=request.message,
-        system=system_instruction,
-        history=history,
-        max_tokens=MAX_OUTPUT_TOKENS,
-    )
+    # Historial del request (opcional, para compatibilidad con frontend)
+    history = [
+        {"role": m.role, "content": m.content}
+        for m in (request.history or [])[-MAX_HISTORY_TURNS:]
+    ]
 
     try:
-        result  = await router.generate(gen_request)
+        result = await nexus_core.process(
+            message=request.message,
+            system_prompt=system_instruction,
+            history=history,
+            project=request.project,
+            request_id=request_id,
+        )
+
         elapsed = time.perf_counter() - started
-
-        # Evaluar respuesta
-        eval_result = evaluator.evaluate_response(
-            result.response.text,
-            request.message,
-            provider=result.response.provider,
-            duration_ms=int(elapsed * 1000),
-        )
-
         logger.info(
-            "[%s] OK | provider=%s | fallback=%s | score=%.2f | %.2fs",
-            request_id, result.response.provider,
-            result.fallback, eval_result.score, elapsed,
+            "[%s] OK | provider=%s | intent=%s | fallback=%s | %.2fs",
+            request_id, result.provider, result.intent,
+            result.fallback, elapsed,
         )
 
+        # Contrato JSON existente + campos nuevos opcionales
         return {
-            "success":     True,
-            "response":    result.response.text,
-            "provider":    result.response.provider,
-            "model":       result.response.model,
-            "fallback":    result.fallback,
-            "local_mode":  result.local_mode,
-            "request_id":  request_id,
-            "duration_ms": int(elapsed * 1000),
+            "success":        True,
+            "response":       result.text,
+            "provider":       result.provider,
+            "model":          result.model,
+            "fallback":       result.fallback,
+            "local_mode":     result.local_mode,
+            "request_id":     request_id,
+            "duration_ms":    result.duration_ms,
+            "intent":         result.intent,
+            "domain":         result.domain,
+            "tools_used":     result.tools_used,
         }
 
     except Exception as error:
@@ -325,23 +352,76 @@ async def service_worker():
 
 
 # ============================================================
-# RUTAS NUEVAS — AURA Brain
+# RUTAS NUEVAS — NEXUS Core v3.5.0
+# ============================================================
+
+@app.get("/api/nexus/memory")
+async def nexus_memory():
+    """Estado y estadísticas de la memoria."""
+    assert nexus_core is not None
+    stats = nexus_core._memory.stats() if nexus_core._memory else {}
+    return {"success": True, "memory": stats}
+
+
+@app.post("/api/nexus/memory/clear")
+async def nexus_memory_clear(body: dict = {}):
+    """Limpiar memoria. Por defecto solo working memory."""
+    assert nexus_core is not None
+    if nexus_core._memory is None:
+        return {"success": False, "error": "Memory no disponible."}
+    memory_type_str = body.get("type", "working")
+    try:
+        mt    = MemoryType(memory_type_str)
+        count = nexus_core._memory._store.clear(mt)
+    except ValueError:
+        count = nexus_core._memory._store.clear()
+    return {"success": True, "cleared": count, "type": memory_type_str}
+
+
+@app.get("/api/nexus/tools")
+async def nexus_tools():
+    """Herramientas disponibles en el registry."""
+    assert nexus_core is not None
+    if nexus_core._executor is None or nexus_core._executor._registry is None:
+        return {"success": True, "tools": []}
+    tools = nexus_core._executor._registry.describe()
+    stats = nexus_core._executor._registry.stats()
+    return {"success": True, "tools": tools, "stats": stats}
+
+
+@app.post("/api/nexus/intent")
+async def nexus_intent(body: IntentDebugRequest):
+    """Clasificar el intent de un mensaje (endpoint de debug)."""
+    assert nexus_core is not None
+    if nexus_core._intent is None:
+        return {"success": False, "error": "IntentRouter no disponible."}
+    result = nexus_core._intent.route(body.message)
+    return {
+        "success":        True,
+        "intent":         result.intent,
+        "domain":         result.domain.value,
+        "confidence":     result.confidence,
+        "strategy":       result.strategy.value,
+        "requires_tool":  result.requires_tool,
+        "candidate_tools": result.candidate_tools,
+        "requires_memory": result.requires_memory,
+    }
+
+
+# ============================================================
+# RUTAS AURA Brain (v3.4.0 — sin cambios)
 # ============================================================
 
 @app.get("/api/aura/status")
 async def aura_status():
-    """Estado del cerebro AURA y sus subsistemas."""
-    assert router is not None
+    assert model_router is not None
+    core_status = nexus_core.status() if nexus_core else {}
     return {
         "system":      "AURA",
         "version":     APP_VERSION,
-        "local_mode":  router.local_mode_active(),
-        "providers":   router.provider_status(),
-        "brain": {
-            "memory":     memory.stats(),
-            "evaluation": evaluator.stats(),
-            "perception_queue": len(perception.pending()),
-        },
+        "local_mode":  model_router.local_mode_active(),
+        "providers":   model_router.provider_status(),
+        "brain":       core_status,
         "hardware": {
             "simulation_scenario": simulation.scenario.value,
         },
@@ -350,10 +430,6 @@ async def aura_status():
 
 @app.post("/api/aura/perceive")
 async def aura_perceive(request: PerceiveRequest):
-    """
-    Inyectar un evento de percepción externo.
-    Útil para testing, simulación manual, o integración futura.
-    """
     try:
         modality = Modality(request.modality)
     except ValueError:
@@ -362,15 +438,11 @@ async def aura_perceive(request: PerceiveRequest):
             detail=f"Modality '{request.modality}' inválida. "
                    f"Opciones: {[m.value for m in Modality]}",
         )
-
     event = PerceptionEvent(
-        modality=modality,
-        data=request.data,
-        source=request.source,
-        confidence=request.confidence,
+        modality=modality, data=request.data,
+        source=request.source, confidence=request.confidence,
     )
     perception.receive(event)
-
     return {
         "success":  True,
         "event_id": event.event_id,
@@ -381,19 +453,13 @@ async def aura_perceive(request: PerceiveRequest):
 
 @app.post("/api/aura/simulate")
 async def aura_simulate(request: SimulateRequest):
-    """
-    Ejecutar N ticks de simulación con el escenario elegido.
-    Retorna los eventos generados.
-    """
     try:
         scenario = SimulationScenario(request.scenario)
     except ValueError:
         raise HTTPException(
             status_code=422,
-            detail=f"Scenario '{request.scenario}' inválido. "
-                   f"Opciones: {[s.value for s in SimulationScenario]}",
+            detail=f"Scenario '{request.scenario}' inválido.",
         )
-
     simulation.set_scenario(scenario)
     all_events = []
     for _ in range(request.ticks):
@@ -401,7 +467,6 @@ async def aura_simulate(request: SimulateRequest):
         for e in tick_events:
             perception.receive(e)
         all_events.extend(tick_events)
-
     return {
         "success":   True,
         "scenario":  scenario.value,

@@ -59,7 +59,7 @@ def _float_env(name: str, default: float) -> float:
 # ============================================================
 
 GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
+GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 GEMINI_MAX_RETRIES = _int_env("GEMINI_MAX_RETRIES", 3)
 
 OPENROUTER_API_KEY        = os.getenv("OPENROUTER_API_KEY", "").strip()
@@ -146,3 +146,25 @@ ALL_SECRETS = [
     ]
     if s
 ]
+
+
+# ============================================================
+# PHASE 2 — NEXUS CORE
+# ============================================================
+
+import os as _os
+
+# SQLite path (Render filesystem is ephemeral — for dev only)
+MEMORY_DB_PATH = _os.getenv("MEMORY_DB_PATH", "nexus_memory.db").strip()
+
+# Context window budget (approx tokens: chars / 4)
+CONTEXT_TOKEN_LIMIT = _int_env("CONTEXT_TOKEN_LIMIT", 6000)
+
+# Max memory entries returned per search
+MEMORY_SEARCH_LIMIT = _int_env("MEMORY_SEARCH_LIMIT", 8)
+
+# Intent confidence threshold below which we fall back to LLM classification
+INTENT_CONFIDENCE_THRESHOLD = 0.75
+
+# Tool execution timeout (seconds)
+TOOL_TIMEOUT_SECONDS = _float_env("TOOL_TIMEOUT_SECONDS", 30.0)
