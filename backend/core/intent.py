@@ -66,7 +66,7 @@ _DIRECT_RULES: list[tuple[list[str], str, str]] = [
     (
         [r"^(hola|hi|hello|buenas|saludos|hey)\s*[!.]*$"],
         "greeting",
-        "NEXUS Ω en línea. ¿Qué necesitas analizar?",
+        "Manuel, como estas? Todo operativo. En que trabajamos hoy?",
     ),
     (
         [r"^(ping|test)\s*$"],
@@ -269,3 +269,6 @@ class IntentRouter:
             "dijiste", "hablamos", "discutimos", "guarda", "memoriza",
         ]
         return any(t in lower for t in triggers)
+
+
+
