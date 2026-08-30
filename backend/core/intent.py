@@ -1,21 +1,22 @@
 """
-NEXUS Ω — Intent Router.
+NEXUS Ω — Intent Router v3.6.0
 
-Clasifica la intención del mensaje.
+Clasifica la intención del mensaje en 9 tipos:
 
-Capas (en orden):
-  1. Determinística — comandos exactos, patrones regex
-  2. Keyword scoring — puntuación por palabras clave por dominio
-  3. Fallback LLM — (futuro) clasificación por modelo ligero
+  CHAT         → conversación simple, saludos
+  QUESTION     → pregunta factual ("¿qué es X?")
+  ANALYSIS     → análisis profundo de un tema/situación
+  RESEARCH     → investigación, buscar información
+  TASK         → tarea multi-paso que requiere planificación
+  DESIGN       → diseñar sistemas, arquitecturas, productos
+  CALCULATION  → cálculos numéricos, estimaciones
+  SYSTEM       → comandos del sistema NEXUS
+  MEMORY_QUERY → consulta o escritura en memoria
 
-Salida estructurada:
-  intent           — string identificando la intención
-  domain           — área temática
-  confidence       — 0.0 – 1.0
-  requires_tool    — si necesita una herramienta
-  candidate_tools  — nombres de tools candidatas
-  requires_memory  — si debe consultar memoria
-  strategy         — DIRECT | TOOL | LLM
+Capas de clasificación:
+  1. Reglas determinísticas (regex / comandos exactos)
+  2. Keyword scoring por intent y dominio
+  3. Heurística de complejidad (longitud + verbos de acción)
 """
 
 from __future__ import annotations
@@ -26,124 +27,156 @@ from enum import Enum
 from typing import Optional
 
 
+class IntentType(str, Enum):
+    CHAT         = "chat"
+    QUESTION     = "question"
+    ANALYSIS     = "analysis"
+    RESEARCH     = "research"
+    TASK         = "task"
+    DESIGN       = "design"
+    CALCULATION  = "calculation"
+    SYSTEM       = "system"
+    MEMORY_QUERY = "memory_query"
+
+
 class Domain(str, Enum):
-    SYSTEM       = "system"       # estado, ayuda, configuración
-    TIME         = "time"         # hora, fecha, calendarios
-    MEMORY       = "memory"       # recordar, buscar, olvidar
-    STRATEGY     = "strategy"     # planes, negocios, estrategia
-    ANALYSIS     = "analysis"     # análisis, diagnóstico
-    TECHNOLOGY   = "technology"   # IA, código, sistemas
-    PSYCHOLOGY   = "psychology"   # comportamiento, persuasión
-    ECONOMICS    = "economics"    # finanzas, mercados
-    LAW          = "law"          # derecho, legal
-    ROBOTICS     = "robotics"     # robótica, hardware
-    GENERAL      = "general"      # todo lo demás
+    SYSTEM      = "system"
+    TIME        = "time"
+    MEMORY      = "memory"
+    STRATEGY    = "strategy"
+    ANALYSIS    = "analysis"
+    TECHNOLOGY  = "technology"
+    PSYCHOLOGY  = "psychology"
+    ECONOMICS   = "economics"
+    LAW         = "law"
+    ROBOTICS    = "robotics"
+    SCIENCE     = "science"
+    GENERAL     = "general"
 
 
 class IntentStrategy(str, Enum):
-    DIRECT = "direct"   # respuesta sin LLM
-    TOOL   = "tool"     # invocar herramienta
-    LLM    = "llm"      # generar con modelo
+    DIRECT    = "direct"    # respuesta sin LLM
+    TOOL      = "tool"      # invocar herramienta
+    LLM       = "llm"       # llamada simple al modelo
+    AUTONOMY  = "autonomy"  # loop multi-paso
+
+
+# Intents que requieren planificación autónoma
+AUTONOMY_INTENTS = {IntentType.TASK, IntentType.DESIGN, IntentType.ANALYSIS}
+# Intents que se resuelven con una sola llamada LLM
+SINGLE_LLM_INTENTS = {IntentType.QUESTION, IntentType.RESEARCH, IntentType.CALCULATION, IntentType.CHAT}
 
 
 @dataclass
 class IntentResult:
-    intent:          str
-    domain:          Domain
-    confidence:      float
-    strategy:        IntentStrategy
-    requires_tool:   bool            = False
-    candidate_tools: list[str]       = field(default_factory=list)
-    requires_memory: bool            = False
-    direct_response: Optional[str]   = None
-    metadata:        dict            = field(default_factory=dict)
+    intent:           IntentType
+    domain:           Domain
+    confidence:       float
+    strategy:         IntentStrategy
+    requires_tool:    bool             = False
+    candidate_tools:  list[str]        = field(default_factory=list)
+    requires_memory:  bool             = False
+    requires_planning: bool            = False
+    direct_response:  Optional[str]    = None
+    metadata:         dict             = field(default_factory=dict)
 
 
 # ── Reglas determinísticas ────────────────────────────────────
 
-_DIRECT_RULES: list[tuple[list[str], str, str]] = [
-    # (patrones, intent, respuesta directa)
+_DIRECT_RULES: list[tuple[list[str], IntentType, str]] = [
     (
         [r"^(hola|hi|hello|buenas|saludos|hey)\s*[!.]*$"],
-        "greeting",
+        IntentType.CHAT,
         "Manuel, como estas? Todo operativo. En que trabajamos hoy?",
     ),
     (
         [r"^(ping|test)\s*$"],
-        "ping",
+        IntentType.SYSTEM,
         "pong",
     ),
     (
         [r"^(gracias|thanks|thank you|ok gracias)\s*[!.]*$"],
-        "thanks",
+        IntentType.CHAT,
         "De acuerdo.",
     ),
     (
-        [r"^(ayuda|help|\?|qué puedes hacer|que puedes hacer)$"],
-        "help",
+        [r"^(ayuda|help|\?|que puedes hacer|qué puedes hacer)$"],
+        IntentType.SYSTEM,
         (
-            "NEXUS Ω puede analizar estrategia, negocios, tecnología, "
-            "psicología aplicada, derecho y economía. "
-            "También gestiona memoria de conversación y herramientas. "
-            "¿Cuál es tu objetivo?"
+            "NEXUS Ω puede analizar, diseñar, calcular, investigar y planificar. "
+            "Intents activos: CHAT, QUESTION, ANALYSIS, RESEARCH, TASK, DESIGN, "
+            "CALCULATION, SYSTEM, MEMORY_QUERY. ¿Qué necesitas?"
         ),
+    ),
+    (
+        [r"^(estado|status)\s*$"],
+        IntentType.SYSTEM,
+        "NEXUS Ω v3.6.0 operativo. Autonomy Core activo.",
     ),
 ]
 
-# ── Keyword scoring por dominio ────────────────────────────────
+# ── Keyword scoring por IntentType ────────────────────────────
 
-_DOMAIN_KEYWORDS: dict[Domain, list[str]] = {
-    Domain.TIME: [
-        "hora", "tiempo", "fecha", "día", "hoy", "mañana", "cuando",
-        "time", "date", "clock", "ahora", "semana", "mes", "año",
+_INTENT_KEYWORDS: dict[IntentType, list[str]] = {
+    IntentType.QUESTION: [
+        "qué es", "que es", "cómo funciona", "como funciona",
+        "explica", "define", "qué significa", "cuál es",
+        "por qué", "para qué", "diferencia entre",
     ],
-    Domain.MEMORY: [
-        "recuerda", "recuerdo", "guarda", "memoriza", "olvidar",
-        "antes dijiste", "anteriormente", "mencionaste", "busca en",
-        "historial", "memoria",
+    IntentType.ANALYSIS: [
+        "analiza", "análisis", "evalúa", "diagnóstico",
+        "examina", "revisa", "identifica riesgos",
+        "ventajas y desventajas", "pros y contras",
+        "es viable", "factibilidad",
     ],
-    Domain.STRATEGY: [
-        "estrategia", "plan", "negocio", "empresa", "mercado",
-        "competencia", "objetivo", "meta", "kpi", "roadmap",
-        "pivot", "escalar", "modelo de negocio", "ventaja competitiva",
+    IntentType.RESEARCH: [
+        "investiga", "busca información", "encuentra",
+        "qué se sabe sobre", "últimas noticias", "estado del arte",
+        "tendencias", "investigación sobre",
     ],
-    Domain.ANALYSIS: [
-        "analiza", "análisis", "diagnóstico", "evalúa", "diagnoza",
-        "revisa", "examina", "causa", "efecto", "problema", "solución",
-        "riesgo", "oportunidad",
+    IntentType.TASK: [
+        "implementa", "crea", "desarrolla", "construye",
+        "planifica", "organiza", "ejecuta", "produce",
+        "genera", "elabora", "prepara",
     ],
-    Domain.TECHNOLOGY: [
-        "código", "programar", "implementar", "api", "arquitectura",
-        "sistema", "software", "algoritmo", "ia", "machine learning",
-        "modelo", "datos", "database", "servidor",
+    IntentType.DESIGN: [
+        "diseña", "arquitectura", "sistema para", "propón",
+        "estructura", "modelo de", "framework", "esquema",
+        "plano", "blueprint",
     ],
-    Domain.PSYCHOLOGY: [
-        "psicología", "comportamiento", "persuasión", "manipulación",
-        "sesgos", "influencia", "motivación", "liderazgo", "negociación",
-        "ventas", "marketing", "consumer",
+    IntentType.CALCULATION: [
+        "calcula", "cuánto", "cuántos", "estima",
+        "proyecta", "presupuesto", "costo", "precio",
+        "porcentaje", "tasa", "roi", "consumo",
     ],
-    Domain.ECONOMICS: [
-        "economía", "finanzas", "inversión", "mercado", "precio",
-        "inflación", "bolsa", "cripto", "dinero", "presupuesto",
-        "flujo de caja", "valoración",
+    IntentType.MEMORY_QUERY: [
+        "recuerda", "recuerdo", "antes dijiste", "anteriormente",
+        "memoriza", "guarda", "olvidar", "mencionaste",
+        "discutimos", "acordamos", "decidimos",
     ],
-    Domain.LAW: [
-        "derecho", "legal", "contrato", "ley", "normativa", "regulación",
-        "compliance", "gdpr", "propiedad intelectual", "patente",
-        "corporativo", "fiscalidad",
-    ],
-    Domain.ROBOTICS: [
-        "robot", "robótica", "servo", "motor", "sensor", "lidar",
-        "cámara", "hardware", "arduino", "raspberry", "jetson",
-        "actuador", "aura",
-    ],
-    Domain.SYSTEM: [
-        "estado", "status", "nexus", "sistema", "reinicia",
-        "configuración", "versión", "proveedor", "gemini",
+    IntentType.SYSTEM: [
+        "nexus", "sistema", "configuración", "estado",
+        "reinicia", "versión", "proveedor", "herramientas",
     ],
 }
 
-# ── Tools por intent ──────────────────────────────────────────
+# ── Domain keywords ───────────────────────────────────────────
+
+_DOMAIN_KEYWORDS: dict[Domain, list[str]] = {
+    Domain.TIME:       ["hora", "tiempo", "fecha", "día", "hoy", "mañana"],
+    Domain.MEMORY:     ["recuerda", "memoria", "guarda", "historial"],
+    Domain.STRATEGY:   ["estrategia", "negocio", "empresa", "mercado", "competencia"],
+    Domain.ANALYSIS:   ["analiza", "análisis", "diagnóstico", "evalúa"],
+    Domain.TECHNOLOGY: ["código", "programar", "api", "sistema", "software", "ia"],
+    Domain.PSYCHOLOGY: ["psicología", "comportamiento", "persuasión", "sesgos"],
+    Domain.ECONOMICS:  ["economía", "finanzas", "inversión", "mercado", "precio"],
+    Domain.LAW:        ["derecho", "legal", "contrato", "ley", "normativa"],
+    Domain.ROBOTICS:   ["robot", "robótica", "servo", "motor", "sensor", "aura"],
+    Domain.SCIENCE:    ["ciencia", "física", "química", "biología", "matemáticas"],
+    Domain.SYSTEM:     ["nexus", "sistema", "estado", "status"],
+}
+
+# ── Tool mappings ─────────────────────────────────────────────
 
 _INTENT_TOOLS: dict[str, list[str]] = {
     "time_query":    ["clock"],
@@ -154,25 +187,26 @@ _INTENT_TOOLS: dict[str, list[str]] = {
 
 class IntentRouter:
     """
-    Clasifica la intención del mensaje en dos capas:
-    1. Reglas determinísticas (exactas/regex)
-    2. Keyword scoring por dominio
+    Clasifica mensajes en 9 tipos de intent.
+
+    Capa 1: reglas determinísticas
+    Capa 2: keyword scoring
+    Capa 3: heurística de complejidad
     """
 
     def __init__(self, registry=None) -> None:
-        self._registry = registry   # ToolRegistry opcional
+        self._registry = registry
 
     def route(self, message: str, context: str = "") -> IntentResult:
-        """Clasificar mensaje y retornar IntentResult."""
         stripped = message.strip()
         lower    = stripped.lower()
 
-        # ── Capa 1: reglas determinísticas ───────────────────
-        for patterns, intent, response in _DIRECT_RULES:
+        # ── Capa 1: determinística ────────────────────────────
+        for patterns, intent_type, response in _DIRECT_RULES:
             for pattern in patterns:
                 if re.match(pattern, lower, re.IGNORECASE):
                     return IntentResult(
-                        intent=intent,
+                        intent=intent_type,
                         domain=Domain.SYSTEM,
                         confidence=1.0,
                         strategy=IntentStrategy.DIRECT,
@@ -180,40 +214,69 @@ class IntentRouter:
                     )
 
         # ── Capa 2: keyword scoring ───────────────────────────
-        domain, domain_conf = self._score_domain(lower)
+        intent_type, intent_conf = self._score_intent(lower)
+        domain, _                = self._score_domain(lower)
 
-        # Detectar necesidad de tools específicas
+        requires_memory = self._needs_memory(lower)
+        requires_planning = intent_type in AUTONOMY_INTENTS
+
+        # Determinar estrategia
+        strategy = self._determine_strategy(intent_type, lower)
+
+        # Tool candidates
         requires_tool   = False
         candidate_tools: list[str] = []
-        strategy        = IntentStrategy.LLM
-        intent          = self._intent_from_domain(lower, domain)
-        requires_memory = self._needs_memory(lower)
 
-        # Tools por intent conocido
-        if intent in _INTENT_TOOLS:
-            candidate_tools = _INTENT_TOOLS[intent]
+        key = f"{intent_type.value}_query" if intent_type == IntentType.SYSTEM else ""
+        if intent_type == IntentType.MEMORY_QUERY:
+            candidate_tools = ["memory_search"]
             requires_tool   = True
             strategy        = IntentStrategy.TOOL
-
-        # Discovery adicional desde registry
-        if self._registry and not requires_tool:
+        elif domain == Domain.TIME or any(w in lower for w in ["hora", "fecha"]):
+            candidate_tools = ["clock"]
+            requires_tool   = True
+            strategy        = IntentStrategy.TOOL
+        elif self._registry and not requires_planning:
             found = self._registry.find_by_intent(lower, max_results=2)
             if found:
                 candidate_tools = [t.name for t in found]
                 requires_tool   = True
-                strategy        = IntentStrategy.TOOL
+                if strategy == IntentStrategy.LLM:
+                    strategy = IntentStrategy.TOOL
 
         return IntentResult(
-            intent=intent,
+            intent=intent_type,
             domain=domain,
-            confidence=domain_conf,
+            confidence=intent_conf,
             strategy=strategy,
             requires_tool=requires_tool,
             candidate_tools=candidate_tools,
             requires_memory=requires_memory,
+            requires_planning=requires_planning,
         )
 
     # ── Private ───────────────────────────────────────────────
+
+    def _score_intent(self, lower: str) -> tuple[IntentType, float]:
+        scores: dict[IntentType, int] = {}
+        for intent_type, keywords in _INTENT_KEYWORDS.items():
+            score = sum(1 for kw in keywords if kw in lower)
+            if score > 0:
+                scores[intent_type] = score
+
+        if not scores:
+            # Heurística de longitud: mensajes largos → ANALYSIS o TASK
+            words = len(lower.split())
+            if words > 20:
+                return IntentType.ANALYSIS, 0.55
+            if words > 10:
+                return IntentType.QUESTION, 0.55
+            return IntentType.CHAT, 0.5
+
+        best  = max(scores, key=scores.__getitem__)
+        total = sum(scores.values())
+        conf  = min(0.95, 0.5 + (scores[best] / max(total, 1)) * 0.45)
+        return best, conf
 
     def _score_domain(self, lower: str) -> tuple[Domain, float]:
         scores: dict[Domain, int] = {}
@@ -221,54 +284,23 @@ class IntentRouter:
             score = sum(1 for kw in keywords if kw in lower)
             if score > 0:
                 scores[domain] = score
-
         if not scores:
             return Domain.GENERAL, 0.5
-
-        best = max(scores, key=scores.__getitem__)
+        best  = max(scores, key=scores.__getitem__)
         total = sum(scores.values())
         conf  = min(0.95, 0.5 + (scores[best] / max(total, 1)) * 0.45)
         return best, conf
 
-    def _intent_from_domain(self, lower: str, domain: Domain) -> str:
-        # Time
-        if domain == Domain.TIME or any(
-            w in lower for w in ["hora", "fecha", "qué hora", "que hora"]
-        ):
-            return "time_query"
-
-        # Memory ops
-        if domain == Domain.MEMORY or any(
-            w in lower for w in ["recuerda", "busca en memoria", "olvidar"]
-        ):
-            return "memory_search"
-
-        # System status
-        if domain == Domain.SYSTEM and any(
-            w in lower for w in ["estado", "status", "funcionando"]
-        ):
-            return "system_status"
-
-        # Analysis
-        if domain == Domain.ANALYSIS:
-            return "analysis"
-
-        # Strategy
-        if domain == Domain.STRATEGY:
-            return "strategy"
-
-        # Code/Tech
-        if domain == Domain.TECHNOLOGY:
-            return "technology"
-
-        return f"{domain.value}_query"
+    def _determine_strategy(self, intent_type: IntentType, lower: str) -> IntentStrategy:
+        if intent_type in AUTONOMY_INTENTS:
+            return IntentStrategy.AUTONOMY
+        if intent_type == IntentType.MEMORY_QUERY:
+            return IntentStrategy.TOOL
+        return IntentStrategy.LLM
 
     def _needs_memory(self, lower: str) -> bool:
-        triggers = [
+        return any(t in lower for t in [
             "recuerda", "antes", "anteriormente", "mencionaste",
-            "dijiste", "hablamos", "discutimos", "guarda", "memoriza",
-        ]
-        return any(t in lower for t in triggers)
-
-
-
+            "dijiste", "hablamos", "discutimos", "acordamos",
+            "guarda", "memoriza",
+        ])

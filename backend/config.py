@@ -59,7 +59,7 @@ def _float_env(name: str, default: float) -> float:
 # ============================================================
 
 GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
+GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 GEMINI_MAX_RETRIES = _int_env("GEMINI_MAX_RETRIES", 3)
 
 OPENROUTER_API_KEY        = os.getenv("OPENROUTER_API_KEY", "").strip()
@@ -168,3 +168,23 @@ INTENT_CONFIDENCE_THRESHOLD = 0.75
 
 # Tool execution timeout (seconds)
 TOOL_TIMEOUT_SECONDS = _float_env("TOOL_TIMEOUT_SECONDS", 30.0)
+
+
+# ============================================================
+# PHASE 3 — AUTONOMY CORE
+# ============================================================
+
+APP_VERSION = "3.6.0"   # override anterior
+
+MAX_PLAN_STEPS       = _int_env("MAX_PLAN_STEPS", 15)
+MAX_EXECUTION_LOOPS  = _int_env("MAX_EXECUTION_LOOPS", 20)
+MAX_RETRIES_PER_STEP = _int_env("MAX_RETRIES_PER_STEP", 3)
+AUTONOMY_ENABLED     = _bool_env("AUTONOMY_ENABLED", True)
+
+# System prompt del Planner (no expone secretos)
+PLANNER_SYSTEM = """
+Eres NEXUS Planner. Tu única función es crear planes estructurados en JSON.
+Responde SOLO con JSON válido. Sin markdown, sin explicaciones, sin texto extra.
+Los pasos deben ser concretos, verificables y ordenados.
+Nunca incluyas acciones irreversibles, destructivas o que requieran acceso externo no disponible.
+""".strip()
