@@ -171,7 +171,9 @@ class KnowledgeStore:
                 JOIN knowledge_fts f ON k.entry_id = f.entry_id
                 WHERE knowledge_fts MATCH ?
             """
-            params: list = [query]
+            # FTS5: unir palabras con OR para búsqueda permisiva
+        fts_query = " OR ".join(query.strip().split())
+        params: list = [fts_query]
         except Exception:
             # FTS fallback a LIKE
             base   = "SELECT * FROM knowledge WHERE content LIKE ? OR title LIKE ?"
@@ -300,3 +302,4 @@ class KnowledgeStore:
             updated_at     = row["updated_at"],
             metadata       = json.loads(row["metadata"] or "{}"),
         )
+
