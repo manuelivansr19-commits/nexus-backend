@@ -1,16 +1,17 @@
 """
-NEXUS Ω — Context Manager.
+NEXUS Ω — Context Manager v3.7.0
 
-Ensambla el contexto completo que se envía al modelo.
-Respeta un límite de tokens para no saturar la ventana de contexto.
+Ensambla el contexto completo para el modelo.
+Ahora incluye conocimiento del KnowledgeEngine.
 
-El contexto combina (en orden de prioridad):
+Orden de prioridad (dentro del budget):
   1. System prompt
-  2. Contexto de proyecto activo
-  3. Hechos relevantes de memoria
-  4. Historial de conversación reciente
-  5. Resultado de tools ejecutadas
-  6. Mensaje actual del usuario
+  2. Conocimiento relevante (KnowledgeEngine)
+  3. Contexto de proyecto
+  4. Hechos de memoria
+  5. Historial de conversación
+  6. Resultados de tools
+  7. Mensaje actual
 """
 
 from __future__ import annotations
@@ -22,38 +23,29 @@ from backend.config import CONTEXT_TOKEN_LIMIT
 
 
 def _estimate_tokens(text: str) -> int:
-    """Estimación rápida: 1 token ≈ 4 caracteres."""
     return max(1, len(text) // 4)
 
 
 @dataclass
 class ContextBundle:
-    """Contexto ensamblado listo para el modelo."""
     system_prompt:    str
-    assembled_prompt: str          # mensaje enriquecido para el modelo
-    history:          list[dict]   # [{"role": ..., "content": ...}]
-    estimated_tokens: int = 0
+    assembled_prompt: str
+    history:          list[dict]
+    estimated_tokens: int       = 0
     sources_used:     list[str] = field(default_factory=list)
 
 
 class ContextManager:
-    """
-    Ensambla contexto respetando el límite de tokens.
-
-    Estrategia de recorte (cuando el budget se agota):
-      1. Reducir historial (mantener los más recientes)
-      2. Reducir memoria de hechos
-      3. Reducir contexto de proyecto
-      4. Mantener siempre: system prompt + mensaje actual
-    """
 
     def __init__(
         self,
         memory=None,
+        knowledge_engine=None,
         token_limit: int = CONTEXT_TOKEN_LIMIT,
     ) -> None:
-        self._memory      = memory
-        self._token_limit = token_limit
+        self._memory           = memory
+        self._knowledge_engine = knowledge_engine
+        self._token_limit      = token_limit
 
     def assemble(
         self,
@@ -64,43 +56,49 @@ class ContextManager:
         tool_results:  Optional[list[str]]  = None,
         project:       str = "",
     ) -> ContextBundle:
-        """
-        Ensambla el contexto completo.
-
-        Retorna ContextBundle con:
-        - system_prompt final
-        - assembled_prompt (mensaje enriquecido)
-        - history (recortado si necesario)
-        - estimated_tokens
-        - sources_used
-        """
         sources: list[str] = []
         budget   = self._token_limit
         sections: list[str] = []
 
-        # Reservar presupuesto para componentes fijos
-        system_tokens = _estimate_tokens(system_prompt)
+        system_tokens  = _estimate_tokens(system_prompt)
         message_tokens = _estimate_tokens(message)
         budget -= system_tokens + message_tokens
 
+        # ── Conocimiento relevante (KnowledgeEngine) ──────────
+        if self._knowledge_engine and budget > 800:
+            try:
+                ctx = self._knowledge_engine.get_for_context(
+                    query=message,
+                    limit=5,
+                    min_confidence=0.5,
+                    exclude_outdated=True,
+                )
+                if not ctx.is_empty():
+                    knowledge_text = ctx.to_prompt_string(max_entries=5)
+                    cost = _estimate_tokens(knowledge_text)
+                    if budget - cost > 600:
+                        sections.append(knowledge_text)
+                        sources.append("knowledge_engine")
+                        budget -= cost
+            except Exception:
+                pass
+
         # ── Contexto de proyecto ──────────────────────────────
-        project_ctx = ""
-        if self._memory and project:
+        if self._memory and project and budget > 500:
             project_ctx = self._memory.projects.get_context(project, limit=3)
             if project_ctx:
                 cost = _estimate_tokens(project_ctx)
-                if budget - cost > 500:
+                if budget - cost > 400:
                     sections.append(project_ctx)
                     sources.append("project_memory")
                     budget -= cost
 
         # ── Hechos relevantes ─────────────────────────────────
-        fact_ctx = ""
-        if self._memory and intent and budget > 500:
+        if self._memory and budget > 400:
             facts = self._memory.facts.search(message, limit=3)
             if facts:
                 fact_lines = "\n".join(f"• {e.content}" for e in facts)
-                fact_ctx   = f"[HECHOS RELEVANTES]\n{fact_lines}"
+                fact_ctx   = f"[MEMORIA FACTUAL]\n{fact_lines}"
                 cost       = _estimate_tokens(fact_ctx)
                 if budget - cost > 300:
                     sections.append(fact_ctx)
@@ -112,11 +110,11 @@ class ContextManager:
             tool_ctx = "\n".join(tool_results)
             cost     = _estimate_tokens(tool_ctx)
             if budget - cost > 200:
-                sections.append(f"[RESULTADOS DE HERRAMIENTAS]\n{tool_ctx}")
+                sections.append(f"[HERRAMIENTAS]\n{tool_ctx}")
                 sources.append("tool_results")
                 budget -= cost
 
-        # ── Historial de conversación (recortado) ─────────────
+        # ── Historial recortado ───────────────────────────────
         final_history = self._trim_history(
             history or [],
             budget=max(0, budget - 200),
@@ -124,16 +122,14 @@ class ContextManager:
         if final_history:
             sources.append("conversation_history")
 
-        # ── Ensamblar prompt final ────────────────────────────
+        # ── Ensamblar ─────────────────────────────────────────
         if sections:
-            context_block = "\n\n".join(sections)
-            assembled = f"{context_block}\n\n[MENSAJE ACTUAL]\n{message}"
+            assembled = "\n\n".join(sections) + f"\n\n[MENSAJE]\n{message}"
         else:
             assembled = message
 
         total_tokens = (
-            system_tokens
-            + message_tokens
+            system_tokens + message_tokens
             + _estimate_tokens("\n\n".join(sections))
             + sum(_estimate_tokens(h["content"]) for h in final_history)
         )
@@ -146,29 +142,20 @@ class ContextManager:
             sources_used=sources,
         )
 
-    def _trim_history(
-        self,
-        history: list[dict],
-        budget: int,
-    ) -> list[dict]:
-        """Recortar historial respetando el budget de tokens."""
+    def _trim_history(self, history: list[dict], budget: int) -> list[dict]:
         if not history:
             return []
-
-        # Empezar desde el más reciente
         result: list[dict] = []
-        used   = 0
+        used = 0
         for entry in reversed(history):
             cost = _estimate_tokens(entry.get("content", ""))
             if used + cost > budget:
                 break
             result.insert(0, entry)
             used += cost
-
         return result
 
     def budget_info(self, text: str) -> dict:
-        """Información de uso de tokens para un texto."""
         tokens = _estimate_tokens(text)
         return {
             "estimated_tokens": tokens,

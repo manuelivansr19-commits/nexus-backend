@@ -1,21 +1,17 @@
 """
-NEXUS Ω — NexusCore v3.6.0
+NEXUS Ω — NexusCore v3.7.0
 
-Orquestador principal con Autonomy Core integrado.
+Integra KnowledgeEngine en el pipeline de procesamiento.
 
-Flujo completo:
+Flujo actualizado:
   mensaje
-    → IntentRouter   (¿qué tipo de solicitud es?)
-    → Ejecutar según estrategia:
-        DIRECT    → respuesta inmediata sin modelo
-        TOOL      → invocar herramienta
-        LLM       → llamada simple al modelo
-        AUTONOMY  → PLAN → EXECUTE → EVALUATE loop
-    → Memory         (guardar conversación)
+    → IntentRouter
+    → KnowledgeEngine.get_for_context()  ← NUEVO
+    → Executor (tools)
+    → ContextManager (con knowledge)
+    → ModelRouter
+    → Memory
     → NexusResponse
-
-El modelo es un componente del sistema, no el sistema completo.
-NEXUS CORE sigue existiendo aunque Gemini esté caído.
 """
 
 from __future__ import annotations
@@ -26,12 +22,11 @@ from typing import Optional
 
 from backend.config import AUTONOMY_ENABLED, DEFAULT_SYSTEM, logger
 from backend.providers.base import GenerateRequest, Message
-from backend.core.intent import IntentResult, IntentStrategy, IntentType
+from backend.core.intent import IntentResult, IntentStrategy
 
 
 @dataclass
 class NexusResponse:
-    """Respuesta unificada — compatible con contrato JSON existente."""
     text:           str
     provider:       str
     model:          str
@@ -46,16 +41,13 @@ class NexusResponse:
     plan_id:        Optional[str]     = None
     plan_steps:     int               = 0
     autonomy_loops: int               = 0
+    knowledge_used: int               = 0   # entradas de knowledge usadas
 
 
 class NexusCore:
     """
     Cerebro de NEXUS Ω.
-
-    El Core NO conoce SDKs específicos.
-    Solo habla con interfaces abstractas:
-      ModelRouter, Memory, IntentRouter, ContextManager,
-      Executor, Evaluator, AutonomyLoop.
+    No conoce SDKs. Solo interfaces abstractas.
     """
 
     def __init__(
@@ -67,6 +59,7 @@ class NexusCore:
         executor=None,
         evaluator=None,
         autonomy_loop=None,
+        knowledge_engine=None,
     ) -> None:
         self._router          = model_router
         self._memory          = memory
@@ -75,6 +68,7 @@ class NexusCore:
         self._executor        = executor
         self._evaluator       = evaluator
         self._autonomy_loop   = autonomy_loop
+        self._knowledge       = knowledge_engine
 
     async def process(
         self,
@@ -84,7 +78,6 @@ class NexusCore:
         project:       str               = "",
         request_id:    str               = "",
     ) -> NexusResponse:
-        """Procesar mensaje completo."""
         started = time.perf_counter()
 
         # ── 1. Intent routing ─────────────────────────────────
@@ -100,22 +93,18 @@ class NexusCore:
                 intent_result.confidence,
             )
 
-            # DIRECT — sin modelo
             if intent_result.strategy == IntentStrategy.DIRECT:
                 self._save_to_memory(message, intent_result.direct_response or "")
                 elapsed = int((time.perf_counter() - started) * 1000)
                 return NexusResponse(
                     text=intent_result.direct_response or "",
-                    provider="system",
-                    model="deterministic",
-                    fallback=False,
-                    local_mode=False,
+                    provider="system", model="deterministic",
+                    fallback=False, local_mode=False,
                     duration_ms=elapsed,
                     intent=intent_result.intent.value,
                     domain=intent_result.domain.value,
                 )
 
-            # AUTONOMY — loop multi-paso
             if (
                 intent_result.strategy == IntentStrategy.AUTONOMY
                 and AUTONOMY_ENABLED
@@ -126,7 +115,26 @@ class NexusCore:
                     history, started, request_id
                 )
 
-        # ── 2. Tool execution ─────────────────────────────────
+        # ── 2. Knowledge retrieval ────────────────────────────
+        knowledge_used = 0
+        if self._knowledge:
+            try:
+                domain_hint = intent_result.domain.value if intent_result else None
+                kctx = self._knowledge.get_for_context(
+                    query=message,
+                    domain=domain_hint if domain_hint != "general" else None,
+                    limit=5,
+                )
+                knowledge_used = kctx.total_found
+                if knowledge_used:
+                    logger.info(
+                        "[%s] Knowledge: %d entradas | dominios: %s",
+                        request_id, knowledge_used, kctx.domains_covered,
+                    )
+            except Exception:
+                pass
+
+        # ── 3. Tool execution ─────────────────────────────────
         tool_context_strings: list[str] = []
         tools_used: list[str] = []
 
@@ -153,15 +161,15 @@ class NexusCore:
                     text=combined,
                     provider="tool",
                     model=tools_used[0] if tools_used else "tool",
-                    fallback=False,
-                    local_mode=False,
+                    fallback=False, local_mode=False,
                     duration_ms=elapsed,
                     intent=intent_result.intent.value if intent_result else "tool",
                     domain=intent_result.domain.value if intent_result else "system",
                     tools_used=tools_used,
+                    knowledge_used=knowledge_used,
                 )
 
-        # ── 3. Context assembly ───────────────────────────────
+        # ── 4. Context assembly ───────────────────────────────
         context_tokens    = 0
         assembled_message = message
         final_history     = history or []
@@ -178,16 +186,18 @@ class NexusCore:
             assembled_message = bundle.assembled_prompt
             final_history     = bundle.history
             context_tokens    = bundle.estimated_tokens
+            logger.info(
+                "[%s] Context: ~%d tokens | sources: %s",
+                request_id, context_tokens, bundle.sources_used,
+            )
 
-        # ── 4. Generate with model ────────────────────────────
+        # ── 5. Generate ───────────────────────────────────────
         if self._router is None:
             elapsed = int((time.perf_counter() - started) * 1000)
             return NexusResponse(
                 text="NEXUS: Sin proveedor de modelo disponible.",
-                provider="none",
-                model="none",
-                fallback=False,
-                local_mode=False,
+                provider="none", model="none",
+                fallback=False, local_mode=False,
                 duration_ms=elapsed,
                 intent=intent_result.intent.value if intent_result else "general",
                 domain=intent_result.domain.value if intent_result else "general",
@@ -199,25 +209,23 @@ class NexusCore:
             if h.get("role") in ("user", "assistant")
         ]
 
-        gen_request = GenerateRequest(
-            prompt=assembled_message,
-            system=system_prompt,
-            history=history_messages,
+        result = await self._router.generate(
+            GenerateRequest(
+                prompt=assembled_message,
+                system=system_prompt,
+                history=history_messages,
+            )
         )
 
-        result = await self._router.generate(gen_request)
-
-        # ── 5. Evaluate ───────────────────────────────────────
         elapsed = int((time.perf_counter() - started) * 1000)
+
         if self._evaluator:
             self._evaluator.evaluate_response(
-                result.response.text,
-                message,
+                result.response.text, message,
                 provider=result.response.provider,
                 duration_ms=elapsed,
             )
 
-        # ── 6. Save to memory ─────────────────────────────────
         self._save_to_memory(message, result.response.text)
 
         return NexusResponse(
@@ -231,23 +239,14 @@ class NexusCore:
             domain=intent_result.domain.value if intent_result else "general",
             tools_used=tools_used,
             context_tokens=context_tokens,
+            knowledge_used=knowledge_used,
         )
 
     async def _run_autonomy(
-        self,
-        message:       str,
-        intent_result: IntentResult,
-        system_prompt: str,
-        history:       Optional[list[dict]],
-        started:       float,
-        request_id:    str,
+        self, message, intent_result, system_prompt,
+        history, started, request_id,
     ) -> NexusResponse:
-        """Ejecutar loop de autonomía para intents complejos."""
-        logger.info(
-            "[%s] Iniciando AutonomyLoop | intent=%s",
-            request_id, intent_result.intent.value,
-        )
-
+        logger.info("[%s] AutonomyLoop | intent=%s", request_id, intent_result.intent.value)
         autonomy_result = await self._autonomy_loop.run(
             goal=message,
             intent_type=intent_result.intent.value,
@@ -255,32 +254,23 @@ class NexusCore:
             request_id=request_id,
             use_llm_plan=True,
         )
-
         elapsed = int((time.perf_counter() - started) * 1000)
-
-        # Guardar en memoria
         self._save_to_memory(message, autonomy_result.text)
-
-        # Si necesita input del usuario
         if autonomy_result.needs_input:
             return NexusResponse(
                 text=autonomy_result.input_question or "Necesito más información.",
-                provider="autonomy",
-                model="planner",
-                fallback=False,
-                local_mode=False,
+                provider="autonomy", model="planner",
+                fallback=False, local_mode=False,
                 duration_ms=elapsed,
                 intent=intent_result.intent.value,
                 domain=intent_result.domain.value,
             )
-
         plan = autonomy_result.plan
         return NexusResponse(
             text=autonomy_result.text,
-            provider=autonomy_result.trace.steps_log[-1]["status"] if autonomy_result.trace.steps_log else "autonomy",
+            provider="autonomy",
             model=f"autonomy:{autonomy_result.trace.status.value}",
-            fallback=False,
-            local_mode=False,
+            fallback=False, local_mode=False,
             duration_ms=elapsed,
             intent=intent_result.intent.value,
             domain=intent_result.domain.value,
@@ -300,13 +290,15 @@ class NexusCore:
 
     def status(self) -> dict:
         return {
-            "model_router":    bool(self._router),
-            "memory":          bool(self._memory),
-            "intent_router":   bool(self._intent),
-            "context_manager": bool(self._context),
-            "executor":        bool(self._executor),
-            "evaluator":       bool(self._evaluator),
-            "autonomy_loop":   bool(self._autonomy_loop),
-            "memory_stats":    self._memory.stats() if self._memory else {},
+            "model_router":     bool(self._router),
+            "memory":           bool(self._memory),
+            "intent_router":    bool(self._intent),
+            "context_manager":  bool(self._context),
+            "executor":         bool(self._executor),
+            "evaluator":        bool(self._evaluator),
+            "autonomy_loop":    bool(self._autonomy_loop),
+            "knowledge_engine": bool(self._knowledge),
+            "memory_stats":     self._memory.stats() if self._memory else {},
+            "knowledge_stats":  self._knowledge.stats() if self._knowledge else {},
             "autonomy_enabled": AUTONOMY_ENABLED,
         }

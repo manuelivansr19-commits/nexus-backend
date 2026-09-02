@@ -188,3 +188,15 @@ Responde SOLO con JSON válido. Sin markdown, sin explicaciones, sin texto extra
 Los pasos deben ser concretos, verificables y ordenados.
 Nunca incluyas acciones irreversibles, destructivas o que requieran acceso externo no disponible.
 """.strip()
+
+
+# ============================================================
+# PHASE 4 — KNOWLEDGE ENGINE
+# ============================================================
+
+APP_VERSION = "3.7.0"   # override
+
+KNOWLEDGE_DB_PATH      = _os.getenv("KNOWLEDGE_DB_PATH", "nexus_knowledge.db").strip()
+KNOWLEDGE_MAX_RESULTS  = _int_env("KNOWLEDGE_MAX_RESULTS", 10)
+KNOWLEDGE_MIN_CONFIDENCE = 0.5
+KNOWLEDGE_CONTEXT_LIMIT  = _int_env("KNOWLEDGE_CONTEXT_LIMIT", 5)

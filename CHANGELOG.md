@@ -1,54 +1,43 @@
 # Changelog
 
-## [3.3.0] — 2026-08-25
+## [3.7.0] — 2026-08-30
 
-### Fase 1.5: Estabilización + Modularización
+### Fase 4: Knowledge Engine
 
-**Corregido:**
-- 🔴 BUG: `fallback` siempre era `false` aunque se usara un provider alternativo.
-  Ahora el router detecta correctamente si la respuesta vino de un fallback.
-- 🔴 BUG: Se creaba un nuevo `httpx.AsyncClient` por cada request HTTP.
-  Ahora se usa un cliente global compartido con connection pooling.
-- 🟡 BUG: Gemini no tenía timeout. Ahora usa `asyncio.wait_for()` con
-  `REQUEST_TIMEOUT_SECONDS`.
-- 🟡 BUG: Ollama usaba el endpoint legacy `/api/generate` con prompt
-  concatenado. Ahora usa `/api/chat` con mensajes estructurados.
+**Nuevo — backend/knowledge/ (7 archivos):**
+- `models.py` — KnowledgeEntry, KnowledgeType (FACT/OBSERVATION/ESTIMATE/FORECAST/SCENARIO/HYPOTHESIS), KnowledgeStatus (CURRENT/AGING/OUTDATED/REQUIRES_REVIEW), Domain (8 dominios), KnowledgeContext
+- `store.py` — KnowledgeStore SQLite + FTS5 con índices por dominio/tipo/confianza/fecha
+- `classifier.py` — KnowledgeClassifier: detección de dominio, tipo, subdominio, aging automático
+- `retrieval.py` — KnowledgeRetriever: FTS, domain filter, recent, semantic (interfaz futura)
+- `ingestion.py` — KnowledgeIngestion: validación → clasificación → deduplicación → guardado
+- `engine.py` — KnowledgeEngine: orquestador principal, provider agnostic
+- `__init__.py` — package init
 
-**Añadido:**
-- Soporte para historial de conversación (`history` en ChatRequest).
-  El frontend puede enviar los últimos N mensajes para contexto multi-turn.
-- `BaseModelProvider`: interfaz abstracta para providers. El core no
-  conoce SDKs específicos.
-- `ModelRouter`: router desacoplado con fallback tracking, detección de
-  providers configurados vs disponibles.
-- `backend/config.py`: configuración centralizada. Ningún otro módulo
-  lee `os.getenv()`.
-- `.gitignore`: protege secrets y artefactos.
-- `requirements.txt` con version ranges (builds reproducibles).
-- Tests: `test_core.py` (router, fallback, rate limit) +
-  `test_api.py` (endpoints HTTP).
-- Campo `model` en respuesta de chat (qué modelo específico se usó).
-- `CHANGELOG.md`.
+**Actualizado:**
+- `core/nexus.py` — integra KnowledgeEngine en el pipeline
+- `core/context.py` — incluye conocimiento en el contexto del LLM
+- `main.py` — 7 nuevos endpoints Knowledge
+- `config.py` — KNOWLEDGE_DB_PATH, KNOWLEDGE_MAX_RESULTS, etc.
 
-**Refactorizado:**
-- `main.py` monolítico (~800 líneas) → estructura modular:
-  - `backend/config.py` — configuración
-  - `backend/router.py` — model router
-  - `backend/providers/base.py` — interfaz abstracta
-  - `backend/providers/gemini.py` — provider Gemini
-  - `backend/providers/openrouter.py` — provider OpenRouter
-  - `backend/providers/groq.py` — provider Groq
-  - `backend/providers/ollama.py` — provider Ollama
-  - `backend/main.py` — solo endpoints y lifespan
+**Endpoints nuevos:**
+- `POST /api/knowledge/add` — agregar conocimiento
+- `POST /api/knowledge/search` — buscar con filtros
+- `GET  /api/knowledge/domains` — dominios y subdominios
+- `GET  /api/knowledge/stats` — estadísticas
+- `GET  /api/knowledge/{id}` — obtener entrada
+- `DELETE /api/knowledge/{id}` — eliminar entrada
+- `POST /api/knowledge/refresh` — actualizar statuses por edad
+
+**Tests A→Q:** `tests/test_phase4.py` — 30+ tests
 
 **Sin cambios:**
-- Todos los endpoints mantienen la misma ruta y schema de respuesta.
-- El frontend existente sigue funcionando sin modificaciones.
-- No se eliminaron providers.
-- No se cambió el proveedor principal (Gemini).
+- `/api/nexus/chat` y contrato JSON: inalterados
+- Frontend: inalterado
 
+---
+
+## [3.6.0] — 2026-08-29 — Autonomy Core
+## [3.5.0] — 2026-08-28 — NEXUS Core
+## [3.4.0] — 2026-08-25 — AURA Brain
+## [3.3.0] — 2026-08-25 — Fase 1.5
 ## [3.2.0] — Pre-auditoría
-
-Backend monolítico en un solo archivo `main.py`.
-4 providers: Gemini, OpenRouter, Groq, Ollama.
-Frontend PWA con reconocimiento de voz.
