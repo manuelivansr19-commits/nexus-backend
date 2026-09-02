@@ -11,8 +11,7 @@ import os
 # VERSION
 # ============================================================
 
-APP_VERSION = "3.4.0"
-
+APP_VERSION = "3.7.0"
 # ============================================================
 # LOGGING
 # ============================================================
@@ -174,7 +173,6 @@ TOOL_TIMEOUT_SECONDS = _float_env("TOOL_TIMEOUT_SECONDS", 30.0)
 # PHASE 3 — AUTONOMY CORE
 # ============================================================
 
-APP_VERSION = "3.6.0"   # override anterior
 
 MAX_PLAN_STEPS       = _int_env("MAX_PLAN_STEPS", 15)
 MAX_EXECUTION_LOOPS  = _int_env("MAX_EXECUTION_LOOPS", 20)
@@ -194,9 +192,9 @@ Nunca incluyas acciones irreversibles, destructivas o que requieran acceso exter
 # PHASE 4 — KNOWLEDGE ENGINE
 # ============================================================
 
-APP_VERSION = "3.7.0"   # override
 
 KNOWLEDGE_DB_PATH      = _os.getenv("KNOWLEDGE_DB_PATH", "nexus_knowledge.db").strip()
 KNOWLEDGE_MAX_RESULTS  = _int_env("KNOWLEDGE_MAX_RESULTS", 10)
 KNOWLEDGE_MIN_CONFIDENCE = 0.5
 KNOWLEDGE_CONTEXT_LIMIT  = _int_env("KNOWLEDGE_CONTEXT_LIMIT", 5)
+
