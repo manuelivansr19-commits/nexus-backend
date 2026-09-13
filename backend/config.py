@@ -11,7 +11,8 @@ import os
 # VERSION
 # ============================================================
 
-APP_VERSION = "3.7.0"
+APP_VERSION = "3.4.0"
+
 # ============================================================
 # LOGGING
 # ============================================================
@@ -173,6 +174,7 @@ TOOL_TIMEOUT_SECONDS = _float_env("TOOL_TIMEOUT_SECONDS", 30.0)
 # PHASE 3 — AUTONOMY CORE
 # ============================================================
 
+APP_VERSION = "3.6.0"   # override anterior
 
 MAX_PLAN_STEPS       = _int_env("MAX_PLAN_STEPS", 15)
 MAX_EXECUTION_LOOPS  = _int_env("MAX_EXECUTION_LOOPS", 20)
@@ -192,9 +194,26 @@ Nunca incluyas acciones irreversibles, destructivas o que requieran acceso exter
 # PHASE 4 — KNOWLEDGE ENGINE
 # ============================================================
 
+APP_VERSION = "3.7.0"   # override
 
 KNOWLEDGE_DB_PATH      = _os.getenv("KNOWLEDGE_DB_PATH", "nexus_knowledge.db").strip()
 KNOWLEDGE_MAX_RESULTS  = _int_env("KNOWLEDGE_MAX_RESULTS", 10)
 KNOWLEDGE_MIN_CONFIDENCE = 0.5
 KNOWLEDGE_CONTEXT_LIMIT  = _int_env("KNOWLEDGE_CONTEXT_LIMIT", 5)
 
+
+# ============================================================
+# PHASE 5 — LOCAL-FIRST / INFERENCE ABSTRACTION
+# ============================================================
+
+APP_VERSION = "3.8.0"
+
+# Modo de inferencia: local_first | local_only | cloud_first (deprecated) | cloud_only
+INFERENCE_MODE = _os.getenv("INFERENCE_MODE", "local_first").strip().lower()
+
+# Interruptor de cloud — false = NUNCA llamar servicios externos de inferencia
+ALLOW_CLOUD_INFERENCE = _bool_env("ALLOW_CLOUD_INFERENCE", True)
+
+
+# PHASE 5 - LOCAL-FIRST
+APP_VERSION = '3.8.0'
