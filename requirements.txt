@@ -9,3 +9,5 @@ google-genai>=1.36.0
 # v3.6.0 redeploy
 
 # v3.7.0 knowledge engine
+
+# v3.8.0 force redeploy
