@@ -1,341 +1,144 @@
-"""
-NEXUS Ω — Planner v3.6.0
-
-DOS NIVELES — nunca dependiente de un solo proveedor:
-
-  NIVEL 1: LOCAL/DETERMINISTIC
-    - Reglas, plantillas, heurísticas
-    - Funciona sin LLM
-    - Siempre disponible
-
-  NIVEL 2: LLM-GUIDED
-    - Usa ModelRouter (no llama directamente a Gemini)
-    - Solo si el problema requiere razonamiento complejo
-    - Si falla → fallback a Nivel 1
-
-Flujo:
-  LLM PLANNER
-       ↓ falla
-  LOCAL PLANNER
-       ↓
-  PLAN BÁSICO
-       ↓
-  EXECUTOR
-
-SEPARACIÓN ESTRICTA:
-  Planner  → decide QUÉ hacer
-  Executor → hace lo autorizado
-  Evaluator → comprueba el resultado
-
-El Planner NUNCA ejecuta herramientas directamente.
-"""
-
+﻿"""NEXUS Omega -- Planner v3.8.0"""
 from __future__ import annotations
-
-import json
-import time
-import uuid
+import json, time, uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
-
 from backend.config import MAX_PLAN_STEPS, PLANNER_SYSTEM, logger
 
-
 class StepStatus(str, Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    DONE    = "done"
-    FAILED  = "failed"
-    SKIPPED = "skipped"
-
+    PENDING="pending"; RUNNING="running"; DONE="done"; FAILED="failed"; SKIPPED="skipped"
 
 @dataclass
 class PlanStep:
-    description:     str
-    step_id:         str           = field(default_factory=lambda: str(uuid.uuid4())[:6])
-    tool:            Optional[str] = None      # nombre de tool del registry, o None
-    requires_llm:    bool          = True
-    expected_output: str           = ""
-    depends_on:      list[str]     = field(default_factory=list)
-    status:          StepStatus    = StepStatus.PENDING
-    result:          Optional[str] = None
-    error:           Optional[str] = None
-    retries:         int           = 0
-    duration_ms:     int           = 0
-
-    def to_dict(self) -> dict:
-        return {
-            "step_id":      self.step_id,
-            "description":  self.description,
-            "tool":         self.tool,
-            "requires_llm": self.requires_llm,
-            "status":       self.status.value,
-            "result":       self.result[:100] if self.result else None,
-            "error":        self.error[:100] if self.error else None,
-            "retries":      self.retries,
-        }
-
+    description: str
+    step_id: str = field(default_factory=lambda: str(uuid.uuid4())[:6])
+    tool: Optional[str] = None
+    requires_llm: bool = True
+    expected_output: str = ""
+    depends_on: list = field(default_factory=list)
+    status: StepStatus = StepStatus.PENDING
+    result: Optional[str] = None
+    error: Optional[str] = None
+    retries: int = 0
+    duration_ms: int = 0
+    def to_dict(self):
+        return {"step_id":self.step_id,"description":self.description,"tool":self.tool,
+                "requires_llm":self.requires_llm,"status":self.status.value,
+                "result":self.result[:100] if self.result else None,
+                "error":self.error[:100] if self.error else None,"retries":self.retries}
 
 @dataclass
 class Plan:
-    goal:       str
-    plan_id:    str             = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    steps:      list[PlanStep]  = field(default_factory=list)
-    done:       bool            = False
-    created_at: float           = field(default_factory=time.time)
-    source:     str             = "local"      # "local" | "llm"
-    metadata:   dict            = field(default_factory=dict)
-
-    def next_step(self) -> Optional[PlanStep]:
-        completed = {s.step_id for s in self.steps if s.status == StepStatus.DONE}
+    goal: str
+    plan_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    steps: list = field(default_factory=list)
+    done: bool = False
+    created_at: float = field(default_factory=time.time)
+    source: str = "local"
+    metadata: dict = field(default_factory=dict)
+    def next_step(self):
+        completed = {s.step_id for s in self.steps if s.status==StepStatus.DONE}
         for step in self.steps:
-            if step.status != StepStatus.PENDING:
-                continue
-            if all(dep in completed for dep in step.depends_on):
-                return step
+            if step.status!=StepStatus.PENDING: continue
+            if all(dep in completed for dep in step.depends_on): return step
         return None
-
-    def mark_done(self, step_id: str, result: str = "") -> None:
+    def mark_done(self, step_id, result=""):
         for s in self.steps:
-            if s.step_id == step_id:
-                s.status = StepStatus.DONE
-                s.result = result
-        if all(s.status in (StepStatus.DONE, StepStatus.SKIPPED) for s in self.steps):
-            self.done = True
-
-    def mark_failed(self, step_id: str, reason: str = "") -> None:
+            if s.step_id==step_id: s.status=StepStatus.DONE; s.result=result
+        if all(s.status in (StepStatus.DONE,StepStatus.SKIPPED) for s in self.steps): self.done=True
+    def mark_failed(self, step_id, reason=""):
         for s in self.steps:
-            if s.step_id == step_id:
-                s.status = StepStatus.FAILED
-                s.error  = reason
-
-    def mark_running(self, step_id: str) -> None:
+            if s.step_id==step_id: s.status=StepStatus.FAILED; s.error=reason
+    def mark_running(self, step_id):
         for s in self.steps:
-            if s.step_id == step_id:
-                s.status = StepStatus.RUNNING
-
-    def progress(self) -> str:
-        total = len(self.steps)
-        done  = sum(1 for s in self.steps if s.status == StepStatus.DONE)
-        return f"{done}/{total}"
-
-    def collect_results(self) -> str:
-        parts = []
-        for s in self.steps:
-            if s.status == StepStatus.DONE and s.result:
-                parts.append(f"[{s.description}]\n{s.result}")
+            if s.step_id==step_id: s.status=StepStatus.RUNNING
+    def progress(self):
+        return f"{sum(1 for s in self.steps if s.status==StepStatus.DONE)}/{len(self.steps)}"
+    def collect_results(self):
+        parts=[f"[{s.description}]\n{s.result}" for s in self.steps if s.status==StepStatus.DONE and s.result]
         return "\n\n".join(parts) if parts else ""
+    def summary(self):
+        return {"plan_id":self.plan_id,"goal":self.goal,"source":self.source,
+                "steps":len(self.steps),"done":self.done,"progress":self.progress(),
+                "steps_detail":[s.to_dict() for s in self.steps]}
 
-    def summary(self) -> dict:
-        return {
-            "plan_id":      self.plan_id,
-            "goal":         self.goal,
-            "source":       self.source,
-            "steps":        len(self.steps),
-            "done":         self.done,
-            "progress":     self.progress(),
-            "steps_detail": [s.to_dict() for s in self.steps],
-        }
-
-
-# ============================================================
-# NIVEL 1 — LOCAL DETERMINISTIC PLANNER
-# ============================================================
-
-def _steps_from_list(items: list[dict]) -> list[PlanStep]:
-    return [
-        PlanStep(
-            description  = s["description"],
-            tool         = s.get("tool"),
-            requires_llm = s.get("requires_llm", True),
-        )
-        for s in items
-    ]
-
-
-_ANALYSIS_TEMPLATE = [
-    {"description": "Identificar el problema central y sus variables clave", "requires_llm": True},
-    {"description": "Analizar causas y factores relevantes del contexto", "requires_llm": True},
-    {"description": "Identificar riesgos y oportunidades principales", "requires_llm": True},
-    {"description": "Formular conclusiones y recomendaciones accionables", "requires_llm": True},
-]
-
-_DESIGN_TEMPLATE = [
-    {"description": "Definir requisitos y restricciones del sistema", "requires_llm": True},
-    {"description": "Proponer arquitectura o estructura general", "requires_llm": True},
-    {"description": "Especificar componentes y sus interfaces", "requires_llm": True},
-    {"description": "Identificar dependencias, riesgos y mitigaciones", "requires_llm": True},
-    {"description": "Producir diseño preliminar consolidado", "requires_llm": True},
-]
-
-_TASK_TEMPLATE = [
-    {"description": "Clarificar objetivo y criterios de éxito", "requires_llm": True},
-    {"description": "Identificar recursos y herramientas disponibles", "requires_llm": True},
-    {"description": "Definir pasos de implementación concretos", "requires_llm": True},
-    {"description": "Identificar riesgos y plan de contingencia", "requires_llm": True},
-    {"description": "Producir plan de acción detallado", "requires_llm": True},
-]
-
-_RESEARCH_TEMPLATE = [
-    {"description": "Definir el alcance y preguntas de investigación", "requires_llm": True},
-    {"description": "Recopilar y analizar información disponible", "requires_llm": True},
-    {"description": "Identificar hallazgos principales y patrones", "requires_llm": True},
-    {"description": "Sintetizar conclusiones y recomendaciones", "requires_llm": True},
-]
-
-_TEMPLATES: dict[str, list[dict]] = {
-    "analysis":  _ANALYSIS_TEMPLATE,
-    "design":    _DESIGN_TEMPLATE,
-    "task":      _TASK_TEMPLATE,
-    "research":  _RESEARCH_TEMPLATE,
+_TEMPLATES = {
+    "analysis":[{"description":"Identificar el problema central y sus variables"},
+                {"description":"Analizar causas y factores del contexto"},
+                {"description":"Identificar riesgos y oportunidades"},
+                {"description":"Formular conclusiones y recomendaciones"}],
+    "research":[{"description":"Definir alcance y preguntas clave de la investigacion"},
+                {"description":"Analizar el mercado objetivo y segmentos"},
+                {"description":"Identificar competencia y canales alternativos"},
+                {"description":"Evaluar oportunidades y barreras de entrada"},
+                {"description":"Sintetizar hallazgos y recomendaciones accionables"}],
+    "design":  [{"description":"Definir requisitos y restricciones"},
+                {"description":"Proponer arquitectura general"},
+                {"description":"Especificar componentes e interfaces"},
+                {"description":"Identificar dependencias y riesgos"},
+                {"description":"Producir diseno preliminar"}],
+    "task":    [{"description":"Clarificar objetivo y criterios de exito"},
+                {"description":"Identificar recursos disponibles"},
+                {"description":"Definir pasos de implementacion"},
+                {"description":"Identificar riesgos y contingencias"},
+                {"description":"Producir plan de accion"}],
 }
 
-
 class LocalPlanner:
-    """
-    NIVEL 1 — Planner determinístico.
-
-    Siempre disponible. No depende de ningún modelo externo.
-    Usa plantillas por tipo de intent.
-    """
-
-    def __init__(self, max_steps: int = MAX_PLAN_STEPS) -> None:
-        self._max_steps = max_steps
-
-    def plan(self, goal: str, intent_type: str = "task") -> Plan:
-        """Crear plan con plantilla determinística."""
-        template = _TEMPLATES.get(intent_type, _TASK_TEMPLATE)
-        steps    = _steps_from_list(template[:self._max_steps])
-        logger.info(
-            "LocalPlanner: plan creado | intent=%s | pasos=%d",
-            intent_type, len(steps),
-        )
-        return Plan(goal=goal, steps=steps, source="local")
-
-    def single_step(self, description: str, tool: Optional[str] = None) -> Plan:
-        """Plan de un solo paso."""
-        return Plan(
-            goal=description,
-            steps=[PlanStep(description=description, tool=tool, requires_llm=(tool is None))],
-            source="local",
-        )
-
-
-# ============================================================
-# NIVEL 2 — LLM-GUIDED PLANNER
-# ============================================================
+    def __init__(self, max_steps=MAX_PLAN_STEPS):
+        self._max_steps=max_steps
+    def plan(self, goal, intent_type="task"):
+        tmpl=_TEMPLATES.get(intent_type,_TEMPLATES["task"])
+        steps=[PlanStep(description=s["description"],tool=s.get("tool"),
+                        requires_llm=s.get("requires_llm",True)) for s in tmpl[:self._max_steps]]
+        return Plan(goal=goal,steps=steps,source="local")
+    def single_step(self, description, tool=None):
+        return Plan(goal=description,steps=[PlanStep(description=description,tool=tool,
+                    requires_llm=(tool is None))],source="local")
 
 class LLMPlanner:
-    """
-    NIVEL 2 — Planner guiado por LLM.
+    def __init__(self, inference_layer, max_steps=MAX_PLAN_STEPS):
+        self._inference=inference_layer; self._max_steps=max_steps
+    async def plan(self, goal, intent_type="task", context=""):
+        from backend.inference.models import InferenceRequest
+        prompt=(f"Crea un plan para: {goal}\nTipo: {intent_type}\n"
+                f"Responde SOLO JSON valido sin markdown:\n"
+                f"{{\"goal\":\"\",\"steps\":[{{\"description\":\"\",\"tool\":null,\"requires_llm\":true}}]}}\n"
+                f"Maximo {min(self._max_steps,8)} pasos. Solo analisis y planificacion.")
+        result=await self._inference.generate(InferenceRequest(prompt=prompt,system=PLANNER_SYSTEM,max_tokens=1500))
+        raw=result.text.strip().replace("```json","").replace("```","").strip()
+        data=json.loads(raw)
+        steps=[PlanStep(description=s.get("description","paso"),tool=s.get("tool"),
+                        requires_llm=s.get("requires_llm",True))
+               for s in data.get("steps",[])[:self._max_steps]]
+        if not steps: raise ValueError("Plan LLM vacio.")
+        return Plan(goal=data.get("goal",goal),steps=steps,source="llm")
 
-    Usa ModelRouter — no conoce Gemini directamente.
-    Si falla, el Planner principal hace fallback a LocalPlanner.
-    """
-
-    def __init__(self, model_router, max_steps: int = MAX_PLAN_STEPS) -> None:
-        self._router    = model_router
-        self._max_steps = max_steps
-
-    async def plan(self, goal: str, intent_type: str = "task", context: str = "") -> Plan:
-        """Generar plan con LLM. Lanza excepción si falla."""
+class _LegacyPlanner:
+    def __init__(self, router, max_steps):
+        self._router=router; self._max_steps=max_steps
+    async def plan(self, goal, intent_type="task", context=""):
         from backend.providers.base import GenerateRequest
-
-        prompt = (
-            f"Crea un plan estructurado para este objetivo.\n"
-            f"Objetivo: {goal}\n"
-            f"Tipo: {intent_type}\n\n"
-            f"Responde SOLO con JSON válido (sin markdown):\n"
-            f'{{"goal":"...","steps":['
-            f'{{"id":1,"description":"paso concreto","tool":null,"requires_llm":true}}'
-            f']}}\n\n'
-            f"Máximo {min(self._max_steps, 8)} pasos. "
-            f"Solo análisis, planificación, razonamiento. "
-            f"Sin acciones destructivas ni irreversibles."
-        )
-
-        result = await self._router.generate(
-            GenerateRequest(
-                prompt=prompt,
-                system=PLANNER_SYSTEM,
-                max_tokens=1500,
-            )
-        )
-
-        raw = result.response.text.strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
-
-        data  = json.loads(raw)
-        steps = [
-            PlanStep(
-                description  = s.get("description", "paso"),
-                tool         = s.get("tool"),
-                requires_llm = s.get("requires_llm", True),
-                expected_output = s.get("expected_output", ""),
-            )
-            for s in data.get("steps", [])[:self._max_steps]
-        ]
-
-        if not steps:
-            raise ValueError("LLM devolvió plan vacío.")
-
-        logger.info(
-            "LLMPlanner: plan generado | pasos=%d | provider=%s",
-            len(steps), result.response.provider,
-        )
-        return Plan(goal=data.get("goal", goal), steps=steps, source="llm")
-
-
-# ============================================================
-# PLANNER PRINCIPAL — con fallback
-# ============================================================
+        prompt=f"Plan para: {goal}\nJSON: {{\"goal\":\"\",\"steps\":[{{\"description\":\"\"}}]}}"
+        result=await self._router.generate(GenerateRequest(prompt=prompt,system=PLANNER_SYSTEM,max_tokens=1500))
+        data=json.loads(result.response.text.strip().replace("```json","").replace("```","").strip())
+        steps=[PlanStep(description=s.get("description","paso"),requires_llm=True)
+               for s in data.get("steps",[])[:self._max_steps]]
+        return Plan(goal=data.get("goal",goal),steps=steps,source="llm_legacy")
 
 class Planner:
-    """
-    Planner principal con dos niveles y fallback automático.
-
-    Si use_llm=True y el LLM falla → LocalPlanner automáticamente.
-    NEXUS nunca queda inutilizado por un proveedor caído.
-    """
-
-    def __init__(
-        self,
-        model_router=None,
-        max_steps: int = MAX_PLAN_STEPS,
-    ) -> None:
-        self._local     = LocalPlanner(max_steps=max_steps)
-        self._llm       = LLMPlanner(model_router, max_steps) if model_router else None
-        self._max_steps = max_steps
-
-    async def plan(
-        self,
-        goal:        str,
-        intent_type: str  = "task",
-        use_llm:     bool = True,
-        context:     str  = "",
-    ) -> Plan:
-        """
-        Crear plan con fallback automático.
-
-        Orden:
-          1. LLM (si use_llm=True y router disponible)
-          2. LOCAL (siempre disponible)
-        """
+    def __init__(self, inference_layer=None, model_router=None, max_steps=MAX_PLAN_STEPS):
+        self._local=LocalPlanner(max_steps=max_steps); self._max_steps=max_steps
+        if inference_layer is not None: self._llm=LLMPlanner(inference_layer,max_steps)
+        elif model_router is not None:  self._llm=_LegacyPlanner(model_router,max_steps)
+        else: self._llm=None
+    async def plan(self, goal, intent_type="task", use_llm=True, context=""):
         if use_llm and self._llm is not None:
-            try:
-                return await self._llm.plan(goal, intent_type, context)
-            except Exception as e:
-                logger.warning(
-                    "Planner: LLM falló (%s), usando LocalPlanner.",
-                    str(e)[:100],
-                )
-
-        return self._local.plan(goal, intent_type)
-
-    def plan_sync(self, goal: str, intent_type: str = "task") -> Plan:
-        """Plan síncrono (solo LocalPlanner). Para testing y emergencias."""
-        return self._local.plan(goal, intent_type)
-
-    def single_step(self, description: str, tool: Optional[str] = None) -> Plan:
-        return self._local.single_step(description, tool)
+            try: return await self._llm.plan(goal,intent_type,context)
+            except Exception as e: logger.warning("Planner LLM fallo: %s",str(e)[:80])
+        return self._local.plan(goal,intent_type)
+    def plan_sync(self, goal, intent_type="task"):
+        return self._local.plan(goal,intent_type)
+    def single_step(self, description, tool=None):
+        return self._local.single_step(description,tool)
