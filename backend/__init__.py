@@ -1,1 +1,0 @@
-"""NEXUS Omega Backend."""
