@@ -433,6 +433,7 @@ class TestAPICompatibility:
     def setup_method(self):
         from backend.main import app
         self.client = TestClient(app)
+        self.client.__enter__()  # dispara lifespan (fix)
 
     def test_health_returns_200(self):
         r = self.client.get("/health")

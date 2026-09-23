@@ -260,6 +260,7 @@ class TestAURARest:
     def setup_method(self):
         from backend.main import app
         self.client = TestClient(app)
+        self.client.__enter__()  # dispara lifespan (fix)
 
     def test_aura_status_returns_200(self):
         r = self.client.get("/api/aura/status")

@@ -705,6 +705,7 @@ class TestP_NexusCoreIntegration:
 
     def test_knowledge_stats_in_aura_status(self):
         client = TestClient(__import__("backend.main", fromlist=["app"]).app)
+        client.__enter__()  # dispara lifespan (fix)
         r = client.get("/api/aura/status")
         assert r.status_code == 200
         brain = r.json().get("brain", {})
@@ -753,12 +754,14 @@ class TestQ_Security:
 
     def test_delete_requires_valid_id(self):
         client = TestClient(__import__("backend.main", fromlist=["app"]).app)
+        client.__enter__()  # dispara lifespan (fix)
         r = client.delete("/api/knowledge/nonexistent-id-12345")
         assert r.status_code == 200
         assert r.json()["success"] is False
 
     def test_add_endpoint_validates_input(self):
         client = TestClient(__import__("backend.main", fromlist=["app"]).app)
+        client.__enter__()  # dispara lifespan (fix)
         r = client.post("/api/knowledge/add", json={"title": "", "content": ""})
         # Puede ser 200 con success=False o 422 por Pydantic
         if r.status_code == 200:
@@ -766,6 +769,7 @@ class TestQ_Security:
 
     def test_knowledge_domains_endpoint(self):
         client = TestClient(__import__("backend.main", fromlist=["app"]).app)
+        client.__enter__()  # dispara lifespan (fix)
         r = client.get("/api/knowledge/domains")
         assert r.status_code == 200
         data = r.json()

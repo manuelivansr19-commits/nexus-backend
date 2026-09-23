@@ -684,6 +684,7 @@ class TestP_RequestID:
     def test_chat_response_has_request_id(self):
         from backend.main import app
         client   = TestClient(app)
+        client.__enter__()  # dispara lifespan (fix)
         response = client.post("/api/nexus/chat", json={"message": ""})
         assert response.status_code == 200
         assert "request_id" in response.json()
@@ -691,6 +692,7 @@ class TestP_RequestID:
     def test_task_response_has_request_id(self):
         from backend.main import app
         client   = TestClient(app)
+        client.__enter__()  # dispara lifespan (fix)
         response = client.post(
             "/api/nexus/task",
             json={"goal": "analiza algo simple", "use_llm_plan": False}
@@ -702,6 +704,7 @@ class TestP_RequestID:
     def test_health_returns_version(self):
         from backend.main import app
         client   = TestClient(app)
+        client.__enter__()  # dispara lifespan (fix)
         response = client.get("/health")
         assert response.status_code == 200
         assert response.json()["version"] == "3.6.0"
@@ -779,6 +782,7 @@ class TestAPIIntegration:
     def setup_method(self):
         from backend.main import app
         self.client = TestClient(app)
+        self.client.__enter__()  # dispara lifespan (fix)
 
     def test_chat_contract_preserved(self):
         r = self.client.post("/api/nexus/chat", json={"message": ""})

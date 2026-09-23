@@ -11,6 +11,7 @@ from backend.main import app
 
 
 client = TestClient(app)
+client.__enter__()  # dispara lifespan (fix)
 
 
 class TestHealth:
