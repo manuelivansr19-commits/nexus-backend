@@ -149,12 +149,30 @@ class RAMMemoryStore(MemoryStore):
         return entries[:limit]
 
     def search(self, query: str, limit: int = 5) -> list[MemoryEntry]:
-        q = query.lower()
-        results = [
-            e for e in self._store.values()
-            if q in e.content.lower()
-            or any(q in t.lower() for t in e.tags)
-        ]
+        """
+        Búsqueda por palabras (OR entre términos), no por frase exacta.
+
+        Antes se buscaba la consulta completa como un único substring
+        contiguo (`q in e.content.lower()`), lo que fallaba para
+        consultas de varias palabras salvo que aparecieran juntas y
+        en ese orden exacto en el texto — algo poco común en lenguaje
+        natural. Ahora basta con que alguna palabra de la consulta
+        aparezca en el contenido o en algún tag, igual que la búsqueda
+        del Knowledge Engine.
+        """
+        words = [w for w in query.lower().split() if w]
+        if not words:
+            return []
+
+        def matches(e: MemoryEntry) -> bool:
+            content_lower = e.content.lower()
+            tags_lower = [t.lower() for t in e.tags]
+            return any(
+                w in content_lower or any(w in t for t in tags_lower)
+                for w in words
+            )
+
+        results = [e for e in self._store.values() if matches(e)]
         results.sort(key=lambda e: (e.importance, e.timestamp), reverse=True)
         return results[:limit]
 
