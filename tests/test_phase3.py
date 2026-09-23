@@ -553,7 +553,7 @@ class TestL_MemorySearch:
         mem = Memory(RAMMemoryStore())
         mem.facts.save_fact("dato importante sobre robótica")
         tool   = MemorySearchTool(memory=mem)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             tool.execute(ToolInput(context="robótica"))
         )
         assert result.success is True
@@ -766,7 +766,7 @@ class TestQ_SecretsNeverLogged:
         import asyncio
         from backend.core.executor import Executor
         executor = Executor(registry=reg)
-        result   = asyncio.get_event_loop().run_until_complete(
+        result   = asyncio.run(
             executor.execute_by_name("shell_exec", {}, authorized=False)
         )
         assert result.success is False

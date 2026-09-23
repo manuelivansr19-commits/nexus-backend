@@ -465,7 +465,7 @@ class TestJ_GeminiOffline:
                 knowledge_engine=engine,
             )
             import asyncio
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 core.process("hola")
             )
             # Direct intent → no necesita LLM
