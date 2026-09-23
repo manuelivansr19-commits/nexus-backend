@@ -1,5 +1,5 @@
 """
-NEXUS Ω — Knowledge Classifier v3.7.0
+NEXUS Ω — Knowledge Classifier v3.7.1
 
 Clasifica y valida entradas de conocimiento.
 Detecta dominios, tipos, y actualiza status según edad.
@@ -62,7 +62,12 @@ _DOMAIN_KEYWORDS: dict[Domain, list[str]] = {
     ],
 }
 
-# ── Keyword mapping para tipo de conocimiento ─────────────────
+# ── Keyword mapping para tipo de conocimiento ────────────────
+# IMPORTANTE: el orden de este dict importa como criterio de desempate
+# cuando dos tipos obtienen el mismo score. HYPOTHESIS va antes que
+# SCENARIO para que, en un empate real (no por falso positivo de
+# substring), gane la clasificación más específica cuando el texto
+# usa explícitamente la palabra "hipótesis".
 
 _TYPE_KEYWORDS: dict[KnowledgeType, list[str]] = {
     KnowledgeType.FACT: [
@@ -77,19 +82,37 @@ _TYPE_KEYWORDS: dict[KnowledgeType, list[str]] = {
         "se prevé", "se espera", "proyección", "para 2025", "para 2030",
         "en el futuro", "se proyecta", "crecerá",
     ],
-    KnowledgeType.SCENARIO: [
-        "si", "podría", "en caso de", "escenario", "hipotéticamente",
-        "bajo condiciones",
-    ],
     KnowledgeType.HYPOTHESIS: [
         "hipótesis", "se cree que", "posiblemente", "sugiere que",
         "podría indicar", "sin confirmar",
+    ],
+    KnowledgeType.SCENARIO: [
+        "si", "podría", "en caso de", "escenario", "hipotéticamente",
+        "bajo condiciones",
     ],
     KnowledgeType.OBSERVATION: [
         "se observó", "se detectó", "en la práctica", "en pruebas",
         "experimentalmente",
     ],
 }
+
+
+def _count_word_matches(keywords: list[str], text_lower: str) -> int:
+    """
+    Cuenta cuántas keywords aparecen en el texto como palabra/frase
+    completa (límites de palabra), no como substring arbitrario.
+
+    Esto evita falsos positivos como "podría" siendo substring de
+    "podrían", que antes hacía ganar a SCENARIO por empate incorrecto
+    sobre HYPOTHESIS en textos como:
+        "Hipótesis: ... podrían permitir superconductividad..."
+    """
+    count = 0
+    for kw in keywords:
+        pattern = r"\b" + re.escape(kw) + r"\b"
+        if re.search(pattern, text_lower):
+            count += 1
+    return count
 
 
 class KnowledgeClassifier:
@@ -99,11 +122,11 @@ class KnowledgeClassifier:
     """
 
     def classify_domain(self, text: str) -> Domain:
-        """Detectar dominio por keywords."""
-        lower  = text.lower()
+        """Detectar dominio por keywords (match de palabra completa)."""
+        lower = text.lower()
         scores: dict[Domain, int] = {}
         for domain, keywords in _DOMAIN_KEYWORDS.items():
-            score = sum(1 for kw in keywords if kw in lower)
+            score = _count_word_matches(keywords, lower)
             if score > 0:
                 scores[domain] = score
         if not scores:
@@ -111,11 +134,11 @@ class KnowledgeClassifier:
         return max(scores, key=scores.__getitem__)
 
     def classify_type(self, text: str) -> KnowledgeType:
-        """Detectar tipo de conocimiento por keywords."""
-        lower  = text.lower()
+        """Detectar tipo de conocimiento por keywords (match de palabra completa)."""
+        lower = text.lower()
         scores: dict[KnowledgeType, int] = {}
         for ktype, keywords in _TYPE_KEYWORDS.items():
-            score = sum(1 for kw in keywords if kw in lower)
+            score = _count_word_matches(keywords, lower)
             if score > 0:
                 scores[ktype] = score
         if not scores:

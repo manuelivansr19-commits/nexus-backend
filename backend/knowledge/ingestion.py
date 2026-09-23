@@ -1,5 +1,5 @@
 """
-NEXUS Ω — Knowledge Ingestion v3.7.0
+NEXUS Ω — Knowledge Ingestion v3.7.1
 
 Ingestión de conocimiento con validación y deduplicación.
 
@@ -116,13 +116,13 @@ class KnowledgeIngestion:
             metadata       = metadata or {},
         )
 
-        # ── 2. Validar ────────────────────────────────────────
+        # ── 2. Validar ─────────────────────────────────────────
         errors = self._classifier.validate(entry)
         if errors:
             logger.warning("KnowledgeIngestion: validación falló: %s", errors)
             return IngestionResult(success=False, errors=errors)
 
-        # ── 3. Deduplicar ─────────────────────────────────────
+        # ── 3. Deduplicar ──────────────────────────────────────
         if not allow_duplicate and self._classifier.is_duplicate(self._store, entry):
             logger.info(
                 "KnowledgeIngestion: duplicado detectado (hash=%s)",
@@ -136,7 +136,7 @@ class KnowledgeIngestion:
                 action="skipped",
             )
 
-        # ── 4. Guardar ────────────────────────────────────────
+        # ── 4. Guardar ──────────────────────────────────────────
         entry_id = self._store.save(entry)
         logger.info(
             "KnowledgeIngestion: guardado | id=%s | domain=%s | type=%s",
@@ -155,22 +155,29 @@ class KnowledgeIngestion:
         items: list[dict],
         source: str = "batch",
     ) -> list[IngestionResult]:
-        """Ingerir múltiples entradas."""
+        """
+        Ingerir múltiples entradas.
+
+        El campo "source" de cada item tiene prioridad; el parámetro
+        `source` de este método es solo el valor por defecto cuando el
+        item no trae uno propio. Antes se ignoraba item["source"] por
+        completo, así que todas las entradas de un batch quedaban con
+        la misma fuente aunque vinieran de orígenes distintos.
+        """
         results = []
         for item in items:
             result = self.ingest(
                 title=item.get("title", "Sin título"),
                 content=item.get("content", ""),
                 domain=item.get("domain"),
-                source=source,
+                source=item.get("source", source),
                 confidence=item.get("confidence", 0.8),
                 tags=item.get("tags", []),
             )
             results.append(result)
         return results
 
-
-# ── Source interfaces (futuras) ───────────────────────────────
+# ── Source interfaces (futuras) ──────────────────────────────
 
 class SourceInterface:
     """Interfaz base para fuentes de conocimiento."""
