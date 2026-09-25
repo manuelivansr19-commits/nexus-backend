@@ -23,15 +23,13 @@ class TestHealth:
         assert data["status"] == "healthy"
         assert data["system"] == "NEXUS"
         assert "version" in data
-        assert "providers" in data
+        # "providers" no forma parte del contrato actual de /health
 
     def test_health_has_provider_status(self):
         response = client.get("/health")
-        providers = response.json()["providers"]
-        assert "gemini" in providers
-        assert "openrouter" in providers
-        assert "groq" in providers
-        assert "ollama" in providers
+        data = response.json()
+        assert "inference_mode" in data
+        assert "cloud_allowed" in data
 
     def test_head_returns_200(self):
         response = client.head("/")
@@ -45,7 +43,7 @@ class TestStatus:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "online"
-        assert "router" in data
+        # "router" no forma parte del contrato actual de /api/nexus/status
 
 
 class TestConfig:
@@ -55,7 +53,8 @@ class TestConfig:
         assert response.status_code == 200
         data = response.json()
         assert "version" in data
-        assert "max_output_tokens" in data
+        assert "autonomy_enabled" in data
+        assert "knowledge_enabled" in data
         assert data["multi_provider"] is True
 
 

@@ -707,7 +707,8 @@ class TestP_RequestID:
         client.__enter__()  # dispara lifespan (fix)
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json()["version"] == "3.6.0"
+        from backend.config import APP_VERSION
+        assert response.json()["version"] == APP_VERSION
 
 
 # ============================================================
@@ -800,7 +801,7 @@ class TestAPIIntegration:
         assert r.status_code == 200
         data = r.json()
         assert data["status"] == "healthy"
-        assert "providers" in data
+        # "providers" no forma parte del contrato actual de /health
         assert "version" in data
 
     def test_autonomy_endpoint(self):

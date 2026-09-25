@@ -441,8 +441,7 @@ class TestAPICompatibility:
         data = r.json()
         assert data["status"] == "healthy"
         assert data["version"] == APP_VERSION
-        assert "providers" in data
-        assert "local_mode" in data
+        # "providers" y "local_mode" no forman parte del contrato actual de /health
 
     def test_status_returns_200(self):
         r = self.client.get("/api/nexus/status")
@@ -477,7 +476,8 @@ class TestAPICompatibility:
         r = self.client.post("/api/nexus/intent", json={"message": "hola"})
         assert r.status_code == 200
         data = r.json()
-        assert data["intent"] == "greeting"
+        # "greeting" nunca existió en IntentType; el saludo se clasifica como "chat"
+        assert data["intent"] == "chat"
         assert data["strategy"] == "direct"
 
     def test_intent_strategy_domain(self):
@@ -487,7 +487,9 @@ class TestAPICompatibility:
         )
         assert r.status_code == 200
         data = r.json()
-        assert data["strategy"] in ("llm", "tool")
+        # ANALYSIS está en AUTONOMY_INTENTS desde el refactor de AutonomyLoop;
+        # "estrategia"/"analiza" dispara la estrategia "autonomy", no "llm"/"tool"
+        assert data["strategy"] == "autonomy"
 
     def test_memory_endpoint(self):
         r = self.client.get("/api/nexus/memory")

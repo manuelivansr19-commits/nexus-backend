@@ -84,9 +84,13 @@ class TestOfflineMode:
     @pytest.mark.asyncio
     async def test_local_mode_raises_if_no_local_provider(self):
         """LOCAL_ONLY sin provider local configurado → RuntimeError claro."""
-        import backend.config as cfg
-        original = cfg.NEXUS_LOCAL_ONLY
-        cfg.NEXUS_LOCAL_ONLY = True
+        # Se parchea backend.router.NEXUS_LOCAL_ONLY directamente (no
+        # backend.config.NEXUS_LOCAL_ONLY): "from x import y" copia el
+        # valor al importar, así que mutar el módulo config original no
+        # se propaga a la variable ya importada dentro de router.py.
+        import backend.router as router_module
+        original = router_module.NEXUS_LOCAL_ONLY
+        router_module.NEXUS_LOCAL_ONLY = True
 
         try:
             from backend.providers.base import BaseModelProvider
@@ -105,7 +109,7 @@ class TestOfflineMode:
             with pytest.raises(RuntimeError, match="NEXUS_LOCAL_ONLY"):
                 await router.generate(make_req())
         finally:
-            cfg.NEXUS_LOCAL_ONLY = original
+            router_module.NEXUS_LOCAL_ONLY = original
 
     @pytest.mark.asyncio
     async def test_fallback_flag_true_when_local_is_primary_but_external_responds(self):
