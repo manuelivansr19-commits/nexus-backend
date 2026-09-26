@@ -1,5 +1,6 @@
-﻿"""NEXUS Omega -- NexusCore v3.8.0"""
+"""NEXUS Omega -- NexusCore v3.8.1"""
 from __future__ import annotations
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -7,6 +8,18 @@ from backend.config import AUTONOMY_ENABLED, DEFAULT_SYSTEM, logger
 from backend.inference.models import InferenceRequest
 from backend.inference.errors import AllRuntimesFailed, CloudInferenceBlocked
 from backend.core.intent import IntentResult, IntentStrategy, IntentType
+
+# Confirmaciones cortas sin contenido propio ("sí", "ok", "dale", "continúa"...).
+# Cuando el usuario responde así y existe una tarea pendiente, se interpreta
+# como continuación de esa tarea en vez de clasificarse como CHAT genérico.
+# No captura frases más largas con verbo propio (esas ya las cubre
+# IntentRouter._FOLLOW_UP_PATTERNS).
+_SHORT_CONFIRMATIONS = re.compile(
+    r"^(si|s\u00ed|no|ok|okay|dale|vale|listo|adelante|"
+    r"contin\u00faa|continua|ahora|hazlo|va|perfecto|de acuerdo)[\s!\.,]*$",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class NexusResponse:
@@ -63,6 +76,15 @@ class NexusCore:
                     provider="system", model="deterministic",
                     fallback=False, local_mode=True, duration_ms=elapsed,
                     intent=intent_result.intent.value, domain=intent_result.domain.value)
+
+            # Confirmación corta ("sí", "ok", "dale"...) con tarea pendiente:
+            # se trata como FOLLOW_UP para reutilizar la lógica ya existente,
+            # en vez de dejar que caiga a clasificación genérica de CHAT.
+            if (self._task_state and intent_result.intent != IntentType.FOLLOW_UP
+                    and _SHORT_CONFIRMATIONS.match(message.strip())):
+                if self._task_state.list_pending():
+                    intent_result.intent = IntentType.FOLLOW_UP
+                    logger.info("[%s] Confirmación corta detectada, tratando como FOLLOW_UP", request_id)
 
             # Follow-up: buscar tarea pendiente
             if intent_result.intent == IntentType.FOLLOW_UP and self._task_state:
@@ -125,12 +147,22 @@ class NexusCore:
         assembled_message = message
         final_history     = history or []
         if self._context:
-            bundle = self._context.assemble(message=message,
-                system_prompt=system_prompt, intent=intent_result,
-                history=history or [], tool_results=tool_context_strings, project=project)
-            assembled_message = bundle.assembled_prompt
-            final_history     = bundle.history
-            context_tokens    = bundle.estimated_tokens
+            try:
+                bundle = self._context.assemble(message=message,
+                    system_prompt=system_prompt, intent=intent_result,
+                    history=history or [], tool_results=tool_context_strings, project=project)
+                assembled_message = bundle.assembled_prompt
+                final_history     = bundle.history
+                context_tokens    = bundle.estimated_tokens
+            except Exception:
+                # Si el ensamblaje de contexto falla (memoria corrupta,
+                # knowledge engine caído, etc.), no debe tumbar toda la
+                # respuesta con un 503: se sigue con el mensaje crudo y
+                # el historial sin recortar como fallback mínimo.
+                logger.exception(
+                    "[%s] Context assembly falló, usando fallback minimo", request_id)
+                assembled_message = message
+                final_history     = history or []
 
         # 5. Inference
         result = await self._infer(assembled_message, system_prompt, final_history, request_id)
