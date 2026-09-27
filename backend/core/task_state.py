@@ -1,4 +1,4 @@
-﻿"""NEXUS Omega -- Task State Manager v3.8.0"""
+"""NEXUS Omega -- Task State Manager v3.8.0"""
 import json, sqlite3, time, uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -89,6 +89,26 @@ class TaskStateManager:
     def list_pending(self) -> list:
         rows = self._conn.execute(
             "SELECT * FROM tasks WHERE status IN ('pending','in_progress') ORDER BY created_at DESC LIMIT 10"
+        ).fetchall()
+        return [self._row(r) for r in rows]
+
+    def list_recently_completed(self, within_seconds: float = 300, limit: int = 5) -> list:
+        """
+        Tareas con status='completed' cuya última actualización
+        (updated_at, no created_at) cae dentro de los últimos
+        `within_seconds`. Ordenadas de más a menos reciente.
+
+        Uso previsto (v3.8 Bloque 4): permitir que NexusCore reactive
+        una tarea recién terminada cuando el usuario continúa
+        explícitamente sobre ella, sin reutilizar tareas completadas
+        hace mucho tiempo ni tareas CANCELLED/FAILED (excluidas por el
+        filtro de status, igual que en list_pending()).
+        """
+        cutoff = time.time() - within_seconds
+        rows = self._conn.execute(
+            "SELECT * FROM tasks WHERE status = 'completed' AND updated_at >= ? "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (cutoff, limit),
         ).fetchall()
         return [self._row(r) for r in rows]
 

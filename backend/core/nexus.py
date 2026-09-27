@@ -1,4 +1,4 @@
-"""NEXUS Omega -- NexusCore v3.8.2"""
+"""NEXUS Omega -- NexusCore v3.8.3"""
 from __future__ import annotations
 import re
 import time
@@ -29,6 +29,13 @@ _CONTINUATION_MARKERS = re.compile(
     r"adem\u00e1s|ademas)\s+\S",
     re.IGNORECASE,
 )
+
+# Ventana de tiempo (segundos) dentro de la cual una tarea COMPLETED se
+# considera "recién terminada" y puede reactivarse ante una continuación
+# explícita (v3.8 Bloque 4). Fuera de esta ventana no se reutiliza, para
+# no inventar relación con una tarea antigua no relacionada. Valor
+# conservador y ajustable; no pretende ser una heurística de contenido.
+_TASK_REACTIVATION_WINDOW_SECONDS = 300
 
 # Órdenes explícitas de detener/cancelar la tarea activa.
 _STOP_TRIGGERS = re.compile(
@@ -160,6 +167,24 @@ class NexusCore:
                     logger.info(
                         "[%s] Continuación detectada: nueva operación '%s' dentro de tarea %s",
                         request_id, intent_result.intent.value, active_task.task_id)
+                else:
+                    # Ciclo de vida (v3.8 Bloque 4): no hay ninguna tarea
+                    # PENDING/IN_PROGRESS, pero puede existir una recién
+                    # COMPLETED que el usuario quiere seguir trabajando.
+                    # Solo se reactiva si: (a) hay un marcador de
+                    # continuación explícito (ya verificado arriba) y
+                    # (b) la tarea completada cae dentro de la ventana de
+                    # reactivación. CANCELLED/FAILED nunca se reactivan
+                    # (list_recently_completed solo consulta 'completed').
+                    recent_done = self._task_state.list_recently_completed(
+                        within_seconds=_TASK_REACTIVATION_WINDOW_SECONDS, limit=1)
+                    if recent_done:
+                        active_task = recent_done[0]
+                        from backend.core.task_state import TaskStatus
+                        self._task_state.update(active_task.task_id, TaskStatus.IN_PROGRESS)
+                        logger.info(
+                            "[%s] Tarea %s reactivada (completada recientemente) para nueva operación '%s'",
+                            request_id, active_task.task_id, intent_result.intent.value)
 
             if (intent_result.strategy == IntentStrategy.AUTONOMY
                     and AUTONOMY_ENABLED and self._autonomy_loop):
