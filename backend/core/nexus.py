@@ -1,4 +1,4 @@
-"""NEXUS Omega -- NexusCore v3.8.1"""
+"""NEXUS Omega -- NexusCore v3.8.2"""
 from __future__ import annotations
 import re
 import time
@@ -13,10 +13,27 @@ from backend.core.intent import IntentResult, IntentStrategy, IntentType
 # Cuando el usuario responde así y existe una tarea pendiente, se interpreta
 # como continuación de esa tarea en vez de clasificarse como CHAT genérico.
 # No captura frases más largas con verbo propio (esas ya las cubre
-# IntentRouter._FOLLOW_UP_PATTERNS).
+# IntentRouter._FOLLOW_UP_PATTERNS, o el patrón de continuación de abajo).
 _SHORT_CONFIRMATIONS = re.compile(
     r"^(si|s\u00ed|no|ok|okay|dale|vale|listo|adelante|"
     r"contin\u00faa|continua|ahora|hazlo|va|perfecto|de acuerdo)[\s!\.,]*$",
+    re.IGNORECASE,
+)
+
+# Marcadores de continuación ("ahora calcula...", "luego compáralo...")
+# seguidos de contenido propio (a diferencia de _SHORT_CONFIRMATIONS, que
+# solo captura el marcador solo). Señalan una NUEVA operación dentro de
+# la tarea activa, no una simple confirmación.
+_CONTINUATION_MARKERS = re.compile(
+    r"^(ahora|luego|despu\u00e9s|despues|y ahora|tambi\u00e9n|tambien|"
+    r"adem\u00e1s|ademas)\s+\S",
+    re.IGNORECASE,
+)
+
+# Órdenes explícitas de detener/cancelar la tarea activa.
+_STOP_TRIGGERS = re.compile(
+    r"^(det[e\u00e9]n(?:te)?\s+la\s+tarea|cancela\s+la\s+tarea|"
+    r"para\s+la\s+tarea|detener\s+tarea|cancelar\s+tarea)[\s!\.,]*$",
     re.IGNORECASE,
 )
 
@@ -63,6 +80,7 @@ class NexusCore:
 
         # 1. Intent routing
         intent_result = None
+        active_task    = None
         if self._intent:
             intent_result = self._intent.route(message)
             logger.info("[%s] Intent: %s | domain: %s | strategy: %s",
@@ -76,6 +94,23 @@ class NexusCore:
                     provider="system", model="deterministic",
                     fallback=False, local_mode=True, duration_ms=elapsed,
                     intent=intent_result.intent.value, domain=intent_result.domain.value)
+
+            # Detener tarea activa: orden explícita, se resuelve antes que
+            # cualquier otra interpretación del mensaje.
+            if self._task_state and _STOP_TRIGGERS.match(message.strip()):
+                pending = self._task_state.list_pending()
+                if pending:
+                    task = pending[0]
+                    from backend.core.task_state import TaskStatus
+                    self._task_state.update(task.task_id, TaskStatus.CANCELLED)
+                    self._save_to_memory(message, f"Tarea '{task.description[:80]}' detenida.")
+                    elapsed = int((time.perf_counter() - started) * 1000)
+                    return NexusResponse(
+                        text=f"Tarea '{task.description[:80]}' detenida.",
+                        provider="task_state", model="cancelled",
+                        fallback=False, local_mode=True, duration_ms=elapsed,
+                        intent=intent_result.intent.value, domain=intent_result.domain.value,
+                        task_id=task.task_id)
 
             # Confirmación corta ("sí", "ok", "dale"...) con tarea pendiente:
             # se trata como FOLLOW_UP para reutilizar la lógica ya existente,
@@ -110,12 +145,45 @@ class NexusCore:
                 return await self._run_autonomy(message, intent_result,
                     system_prompt, history, started, request_id)
 
+            # Continuación de tarea con nueva operación (v3.8 Bloque 2):
+            # un mensaje que arranca con un marcador de continuación
+            # ("ahora", "luego", "después"...) seguido de contenido propio,
+            # mientras existe una tarea activa, se trata como una NUEVA
+            # operación DENTRO de esa tarea: se conserva el task_id y se
+            # inyecta el contexto de la tarea anterior, en vez de perderlo
+            # o de tratarlo como conversación nueva sin relación.
+            #
+            # No aplica si la estrategia ya es AUTONOMY: el autonomy loop
+            # siempre crea una tarea nueva (ver limitación documentada en
+            # el reporte de este bloque); combinarlo con una tarea activa
+            # existente requeriría cambios más amplios en _run_autonomy.
+            if (self._task_state and intent_result.strategy != IntentStrategy.AUTONOMY
+                    and _CONTINUATION_MARKERS.match(message.strip())):
+                pending = self._task_state.list_pending()
+                if pending:
+                    active_task = pending[0]
+                    logger.info(
+                        "[%s] Continuación detectada: nueva operación '%s' dentro de tarea %s",
+                        request_id, intent_result.intent.value, active_task.task_id)
+
+        # Mensaje enriquecido con el contexto de la tarea activa (si aplica)
+        # para las etapas de knowledge/tools/context/inferencia. El mensaje
+        # original se conserva sin modificar para clasificación de intent
+        # (ya hecha arriba) y para guardar en memoria de conversación.
+        contextual_message = message
+        if active_task is not None:
+            context_parts = [f"[Contexto de tarea activa: {active_task.description[:200]}]"]
+            if active_task.result:
+                context_parts.append(f"[Resultado previo de la tarea: {active_task.result[:300]}]")
+            context_parts.append(message)
+            contextual_message = "\n".join(context_parts)
+
         # 2. Knowledge retrieval
         knowledge_used = 0
         if self._knowledge:
             try:
                 domain_hint = intent_result.domain.value if intent_result else None
-                kctx = self._knowledge.get_for_context(query=message,
+                kctx = self._knowledge.get_for_context(query=contextual_message,
                     domain=domain_hint if domain_hint != "general" else None, limit=5)
                 knowledge_used = kctx.total_found
             except Exception:
@@ -128,7 +196,7 @@ class NexusCore:
                 and intent_result.candidate_tools):
             exec_results = await self._executor.execute_candidates(
                 candidate_names=intent_result.candidate_tools,
-                params={"query": message}, context=message, request_id=request_id)
+                params={"query": contextual_message}, context=contextual_message, request_id=request_id)
             tool_context_strings = self._executor.collect_context_strings(exec_results)
             tools_used = [r.tool_name for r in exec_results if r.success]
             if tool_context_strings and intent_result.strategy == IntentStrategy.TOOL:
@@ -140,15 +208,16 @@ class NexusCore:
                     fallback=False, local_mode=True, duration_ms=elapsed,
                     intent=intent_result.intent.value if intent_result else "tool",
                     domain=intent_result.domain.value if intent_result else "system",
-                    tools_used=tools_used, knowledge_used=knowledge_used)
+                    tools_used=tools_used, knowledge_used=knowledge_used,
+                    task_id=active_task.task_id if active_task else None)
 
         # 4. Context assembly
         context_tokens    = 0
-        assembled_message = message
+        assembled_message = contextual_message
         final_history     = history or []
         if self._context:
             try:
-                bundle = self._context.assemble(message=message,
+                bundle = self._context.assemble(message=contextual_message,
                     system_prompt=system_prompt, intent=intent_result,
                     history=history or [], tool_results=tool_context_strings, project=project)
                 assembled_message = bundle.assembled_prompt
@@ -161,7 +230,7 @@ class NexusCore:
                 # el historial sin recortar como fallback mínimo.
                 logger.exception(
                     "[%s] Context assembly falló, usando fallback minimo", request_id)
-                assembled_message = message
+                assembled_message = contextual_message
                 final_history     = history or []
 
         # 5. Inference
@@ -177,7 +246,8 @@ class NexusCore:
             intent=intent_result.intent.value if intent_result else "general",
             domain=intent_result.domain.value if intent_result else "general",
             tools_used=tools_used, context_tokens=context_tokens,
-            knowledge_used=knowledge_used, is_local=result["is_local"])
+            knowledge_used=knowledge_used, is_local=result["is_local"],
+            task_id=active_task.task_id if active_task else None)
 
     async def _infer(self, prompt, system, history, request_id="") -> dict:
         from backend.inference.models import Message as IMessage
