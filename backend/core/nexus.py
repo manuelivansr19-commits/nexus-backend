@@ -140,12 +140,7 @@ class NexusCore:
                             fallback=False, local_mode=True, duration_ms=elapsed,
                             intent="follow_up", domain=task.domain, task_id=task.task_id)
 
-            if (intent_result.strategy == IntentStrategy.AUTONOMY
-                    and AUTONOMY_ENABLED and self._autonomy_loop):
-                return await self._run_autonomy(message, intent_result,
-                    system_prompt, history, started, request_id)
-
-            # Continuación de tarea con nueva operación (v3.8 Bloque 2):
+            # Continuación de tarea con nueva operación (v3.8 Bloque 2/3):
             # un mensaje que arranca con un marcador de continuación
             # ("ahora", "luego", "después"...) seguido de contenido propio,
             # mientras existe una tarea activa, se trata como una NUEVA
@@ -153,18 +148,24 @@ class NexusCore:
             # inyecta el contexto de la tarea anterior, en vez de perderlo
             # o de tratarlo como conversación nueva sin relación.
             #
-            # No aplica si la estrategia ya es AUTONOMY: el autonomy loop
-            # siempre crea una tarea nueva (ver limitación documentada en
-            # el reporte de este bloque); combinarlo con una tarea activa
-            # existente requeriría cambios más amplios en _run_autonomy.
-            if (self._task_state and intent_result.strategy != IntentStrategy.AUTONOMY
-                    and _CONTINUATION_MARKERS.match(message.strip())):
+            # Se calcula ANTES del chequeo de AUTONOMY (a diferencia del
+            # Bloque 2, que lo excluía) para que también aplique cuando la
+            # nueva operación clasifica como AUTONOMY: en ese caso se le
+            # pasa el task_id existente a _run_autonomy, que reutiliza la
+            # tarea en vez de crear una segunda (Bloque 3).
+            if self._task_state and _CONTINUATION_MARKERS.match(message.strip()):
                 pending = self._task_state.list_pending()
                 if pending:
                     active_task = pending[0]
                     logger.info(
                         "[%s] Continuación detectada: nueva operación '%s' dentro de tarea %s",
                         request_id, intent_result.intent.value, active_task.task_id)
+
+            if (intent_result.strategy == IntentStrategy.AUTONOMY
+                    and AUTONOMY_ENABLED and self._autonomy_loop):
+                return await self._run_autonomy(message, intent_result,
+                    system_prompt, history, started, request_id,
+                    existing_task_id=active_task.task_id if active_task else None)
 
         # Mensaje enriquecido con el contexto de la tarea activa (si aplica)
         # para las etapas de knowledge/tools/context/inferencia. El mensaje
@@ -294,14 +295,23 @@ class NexusCore:
                 "provider": "none", "model": "none", "fallback": False, "is_local": False}
 
     async def _run_autonomy(self, message, intent_result, system_prompt,
-                            history, started, request_id) -> NexusResponse:
-        task_id = None
+                            history, started, request_id,
+                            existing_task_id=None) -> NexusResponse:
+        from backend.core.task_state import TaskStatus
+        task_id = existing_task_id
         if self._task_state:
-            task = self._task_state.create(description=message,
-                intent=intent_result.intent.value, domain=intent_result.domain.value)
-            task_id = task.task_id
-            self._task_state.update(task_id, __import__("backend.core.task_state",
-                fromlist=["TaskStatus"]).TaskStatus.IN_PROGRESS)
+            if existing_task_id:
+                # Continuidad estructural (v3.8 Bloque 3): ya existe una
+                # tarea activa y la nueva operación también resultó en
+                # estrategia AUTONOMY. Se reutiliza esa tarea en vez de
+                # crear una segunda, para no perder el hilo:
+                #   MISMA TAREA + NUEVA OPERACIÓN + NUEVO INTENT = MISMO task_id
+                self._task_state.update(task_id, TaskStatus.IN_PROGRESS)
+            else:
+                task = self._task_state.create(description=message,
+                    intent=intent_result.intent.value, domain=intent_result.domain.value)
+                task_id = task.task_id
+                self._task_state.update(task_id, TaskStatus.IN_PROGRESS)
         try:
             autonomy_result = await self._autonomy_loop.run(
                 goal=message, intent_type=intent_result.intent.value,
@@ -309,7 +319,6 @@ class NexusCore:
             elapsed = int((time.perf_counter() - started) * 1000)
             self._save_to_memory(message, autonomy_result.text)
             if task_id and self._task_state:
-                from backend.core.task_state import TaskStatus
                 self._task_state.update(task_id, TaskStatus.COMPLETED, result=autonomy_result.text)
             if autonomy_result.needs_input:
                 return NexusResponse(text=autonomy_result.input_question or "Necesito mas informacion.",
