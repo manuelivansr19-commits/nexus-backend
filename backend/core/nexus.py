@@ -1,8 +1,9 @@
-"""NEXUS Omega -- NexusCore v3.8.3"""
+"""NEXUS Omega -- NexusCore v3.8.4"""
 from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
 from backend.config import AUTONOMY_ENABLED, DEFAULT_SYSTEM, logger
 from backend.inference.models import InferenceRequest
@@ -44,6 +45,53 @@ _STOP_TRIGGERS = re.compile(
     re.IGNORECASE,
 )
 
+# Mensaje corto que termina en un pronombre demostrativo vago ("...esto",
+# "...eso", "...lo") sin más contenido que lo precise. Señal conservadora
+# de que falta información esencial para ejecutar la solicitud (v3.8
+# Bloque 5, PEDIR_INFO). Deliberadamente estrecho: no intenta detectar
+# ambigüedad en general, solo el caso claro de un objeto vago como único
+# referente de la acción, en un mensaje corto y sin tarea activa que le
+# dé contexto (si hay tarea activa, "esto" ya tiene un referente válido
+# y el mensaje se resuelve como CONTINUAR más arriba, no llega aquí).
+_VAGUE_OBJECT_PATTERN = re.compile(r"\b(esto|eso|ello|lo)\b\s*[\.\!\?]*\s*$", re.IGNORECASE)
+_VAGUE_OBJECT_MAX_WORDS = 8
+
+
+class Behavior(str, Enum):
+    """
+    Las 9 categorías de comportamiento (v3.8 Bloque 5). Responden a
+    "¿qué debe hacer NEXUS?", no a "¿cómo lo ejecuta?" — esa segunda
+    pregunta la sigue resolviendo el código de ejecución ya existente
+    (InferenceLayer, AutonomyLoop, Executor, etc.), sin cambios en este
+    bloque. Este enum es puramente una etiqueta de clasificación,
+    calculada por NexusCore a partir de intent_result y de sus propias
+    señales internas (active_task, stop triggers, confirmaciones
+    cortas), sin tocar IntentRouter/IntentResult/IntentStrategy.
+    """
+    CONTINUAR              = "continuar"
+    DETENER                = "detener"
+    PEDIR_INFO             = "pedir_info"
+    RESPONDER              = "responder"
+    CONSULTAR_CONOCIMIENTO = "consultar_conocimiento"
+    CALCULAR               = "calcular"
+    ANALIZAR               = "analizar"
+    PLANIFICAR             = "planificar"
+    EJECUTAR_HERRAMIENTA   = "ejecutar_herramienta"
+
+
+def _autonomy_behavior_for_intent(intent_type: IntentType) -> Behavior:
+    """Dentro de la estrategia AUTONOMY, qué categoría de negocio le
+    corresponde según el IntentType real que la disparó."""
+    if intent_type in (IntentType.TASK, IntentType.DESIGN):
+        return Behavior.PLANIFICAR
+    if intent_type == IntentType.ANALYSIS:
+        return Behavior.ANALIZAR
+    if intent_type == IntentType.RESEARCH:
+        return Behavior.CONSULTAR_CONOCIMIENTO
+    # Fallback conservador si AUTONOMY_INTENTS llegara a ampliarse en el
+    # futuro con un IntentType no contemplado aquí todavía.
+    return Behavior.PLANIFICAR
+
 
 @dataclass
 class NexusResponse:
@@ -64,6 +112,7 @@ class NexusResponse:
     knowledge_used: int            = 0
     is_local:       bool           = False
     task_id:        Optional[str]  = None
+    behavior:       Optional[str]  = None
 
 class NexusCore:
     def __init__(self, inference=None, memory=None, intent_router=None,
@@ -100,7 +149,8 @@ class NexusCore:
                 return NexusResponse(text=intent_result.direct_response or "",
                     provider="system", model="deterministic",
                     fallback=False, local_mode=True, duration_ms=elapsed,
-                    intent=intent_result.intent.value, domain=intent_result.domain.value)
+                    intent=intent_result.intent.value, domain=intent_result.domain.value,
+                    behavior=Behavior.RESPONDER.value)
 
             # Detener tarea activa: orden explícita, se resuelve antes que
             # cualquier otra interpretación del mensaje.
@@ -117,7 +167,7 @@ class NexusCore:
                         provider="task_state", model="cancelled",
                         fallback=False, local_mode=True, duration_ms=elapsed,
                         intent=intent_result.intent.value, domain=intent_result.domain.value,
-                        task_id=task.task_id)
+                        task_id=task.task_id, behavior=Behavior.DETENER.value)
 
             # Confirmación corta ("sí", "ok", "dale"...) con tarea pendiente:
             # se trata como FOLLOW_UP para reutilizar la lógica ya existente,
@@ -138,14 +188,15 @@ class NexusCore:
                         return NexusResponse(text=task.result, provider="task_state",
                             model="memory", fallback=False, local_mode=True,
                             duration_ms=elapsed, intent="follow_up", domain=task.domain,
-                            task_id=task.task_id)
+                            task_id=task.task_id, behavior=Behavior.CONTINUAR.value)
                     elif task.status.value == "pending" or task.status.value == "in_progress":
                         elapsed = int((time.perf_counter() - started) * 1000)
                         return NexusResponse(
                             text=f"Tarea '{task.description[:80]}' esta en estado: {task.status.value}. Procesando ahora...",
                             provider="task_state", model="memory",
                             fallback=False, local_mode=True, duration_ms=elapsed,
-                            intent="follow_up", domain=task.domain, task_id=task.task_id)
+                            intent="follow_up", domain=task.domain, task_id=task.task_id,
+                            behavior=Behavior.CONTINUAR.value)
 
             # Continuación de tarea con nueva operación (v3.8 Bloque 2/3):
             # un mensaje que arranca con un marcador de continuación
@@ -186,11 +237,31 @@ class NexusCore:
                             "[%s] Tarea %s reactivada (completada recientemente) para nueva operación '%s'",
                             request_id, active_task.task_id, intent_result.intent.value)
 
+            # PEDIR_INFO (v3.8 Bloque 5): el mensaje termina en un objeto
+            # vago ("...esto", "...eso") sin más contenido que lo precise,
+            # y no hay ninguna tarea activa que le dé referente. En vez de
+            # inventar una respuesta o disparar AUTONOMY sobre una
+            # solicitud sin sentido claro, se pide la información
+            # faltante. Deliberadamente conservador: solo el caso más
+            # claro, no un sistema general de detección de ambigüedad.
+            if (active_task is None and intent_result.intent != IntentType.FOLLOW_UP
+                    and _VAGUE_OBJECT_PATTERN.search(message.strip())
+                    and len(message.strip().split()) <= _VAGUE_OBJECT_MAX_WORDS):
+                elapsed = int((time.perf_counter() - started) * 1000)
+                clarifying = "¿Podrías darme más detalles sobre a qué te refieres exactamente?"
+                self._save_to_memory(message, clarifying)
+                return NexusResponse(text=clarifying, provider="system", model="pedir_info",
+                    fallback=False, local_mode=True, duration_ms=elapsed,
+                    intent=intent_result.intent.value, domain=intent_result.domain.value,
+                    behavior=Behavior.PEDIR_INFO.value)
+
             if (intent_result.strategy == IntentStrategy.AUTONOMY
                     and AUTONOMY_ENABLED and self._autonomy_loop):
-                return await self._run_autonomy(message, intent_result,
+                autonomy_response = await self._run_autonomy(message, intent_result,
                     system_prompt, history, started, request_id,
                     existing_task_id=active_task.task_id if active_task else None)
+                autonomy_response.behavior = _autonomy_behavior_for_intent(intent_result.intent).value
+                return autonomy_response
 
         # Mensaje enriquecido con el contexto de la tarea activa (si aplica)
         # para las etapas de knowledge/tools/context/inferencia. El mensaje
@@ -235,7 +306,8 @@ class NexusCore:
                     intent=intent_result.intent.value if intent_result else "tool",
                     domain=intent_result.domain.value if intent_result else "system",
                     tools_used=tools_used, knowledge_used=knowledge_used,
-                    task_id=active_task.task_id if active_task else None)
+                    task_id=active_task.task_id if active_task else None,
+                    behavior=Behavior.EJECUTAR_HERRAMIENTA.value)
 
         # 4. Context assembly
         context_tokens    = 0
@@ -266,6 +338,18 @@ class NexusCore:
             self._evaluator.evaluate_response(result["text"], message,
                 provider=result["provider"], duration_ms=elapsed)
         self._save_to_memory(message, result["text"])
+
+        # Categoría de comportamiento para la ruta de inferencia normal:
+        # CALCULATION -> CALCULAR; cualquier otra cosa que llegue hasta
+        # aquí (CHAT, QUESTION, SYSTEM sin match directo, MEMORY_QUERY
+        # sin herramienta aplicable...) es una solicitud conversacional
+        # normal -> RESPONDER. Si no hay IntentRouter configurado, no hay
+        # base para clasificar y se deja en None.
+        behavior = None
+        if intent_result is not None:
+            behavior = (Behavior.CALCULAR if intent_result.intent == IntentType.CALCULATION
+                        else Behavior.RESPONDER).value
+
         return NexusResponse(text=result["text"], provider=result["provider"],
             model=result["model"], fallback=result["fallback"],
             local_mode=result["is_local"], duration_ms=elapsed,
@@ -273,7 +357,8 @@ class NexusCore:
             domain=intent_result.domain.value if intent_result else "general",
             tools_used=tools_used, context_tokens=context_tokens,
             knowledge_used=knowledge_used, is_local=result["is_local"],
-            task_id=active_task.task_id if active_task else None)
+            task_id=active_task.task_id if active_task else None,
+            behavior=behavior)
 
     async def _infer(self, prompt, system, history, request_id="") -> dict:
         from backend.inference.models import Message as IMessage

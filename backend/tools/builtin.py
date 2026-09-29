@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
+from backend.config import APP_VERSION
 from backend.tools.base import BaseTool, RiskLevel, ToolInput, ToolResult
 
 
@@ -63,7 +64,7 @@ class StatusTool(BaseTool):
     async def execute(self, tool_input: ToolInput) -> ToolResult:
         return ToolResult(
             success=True,
-            output="NEXUS Ω v3.5.0 operativo. Todos los subsistemas activos.",
+            output=f"NEXUS Ω v{APP_VERSION} operativo. Todos los subsistemas activos.",
             tool_name=self.name,
         )
 
