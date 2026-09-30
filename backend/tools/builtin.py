@@ -59,7 +59,13 @@ class StatusTool(BaseTool):
 
     @property
     def intent_keywords(self) -> list[str]:
-        return ["estado", "status", "sistema", "operativo", "funcionando", "activo"]
+        return [
+            "estado del sistema", "estado de nexus", "estado de la ia",
+            "estado operacional", "sistema operativo", "sistema está operativo",
+            "sistema esta operativo", "nexus operativo", "nexus está operativo",
+            "nexus esta operativo", "estás operativo", "estas operativo",
+            "sigues activo", "sigues funcionando", "status del sistema",
+        ]
 
     async def execute(self, tool_input: ToolInput) -> ToolResult:
         return ToolResult(
