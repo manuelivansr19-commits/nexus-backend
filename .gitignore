@@ -4,3 +4,7 @@ __pycache__/
 *.pyo
 
 *.db
+
+*.env.txt
+.env
+.env.*

@@ -175,7 +175,7 @@ class IntentRouter:
             candidate_tools = ["memory_search"]
             requires_tool   = True
             strategy        = IntentStrategy.TOOL
-        elif domain == Domain.TIME or any(w in lower for w in ["hora","fecha"]):
+        elif "hora" in lower:
             candidate_tools = ["clock"]
             requires_tool   = True
             strategy        = IntentStrategy.TOOL
