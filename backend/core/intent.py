@@ -1,6 +1,7 @@
 ﻿"""NEXUS Omega -- Intent Router v3.8.0 patch"""
 from __future__ import annotations
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -96,7 +97,7 @@ _INTENT_KEYWORDS: dict[IntentType, list[str]] = {
         "memoriza","guarda","olvidar","discutimos","acordamos",
     ],
     IntentType.SYSTEM: [
-        "nexus","sistema","configuracion","estado","version","herramientas",
+        "sistema","configuracion","estado","version","herramientas",
     ],
 }
 
@@ -114,7 +115,7 @@ _DOMAIN_KEYWORDS: dict[Domain, list[str]] = {
     Domain.LAW:        ["derecho","legal","contrato","ley"],
     Domain.ROBOTICS:   ["robot","robotica","servo","motor","sensor","aura"],
     Domain.SCIENCE:    ["ciencia","fisica","quimica","biologia"],
-    Domain.SYSTEM:     ["nexus","sistema","estado","status"],
+    Domain.SYSTEM:     ["sistema","estado","status"],
 }
 
 _INTENT_TOOLS: dict[str, list[str]] = {
@@ -153,12 +154,18 @@ class IntentRouter:
 
     def route(self, message: str, context: str = "") -> IntentResult:
         stripped = message.strip()
-        lower    = stripped.lower()
+        lower = stripped.lower()
+        direct_text = unicodedata.normalize("NFKD", lower)
+        direct_text = "".join(
+            c for c in direct_text if not unicodedata.combining(c)
+        )
+        direct_text = re.sub(r"[^a-z0-9 ]+", " ", direct_text)
+        direct_text = " ".join(direct_text.split()).strip()
 
         # Capa 1: reglas directas
         for patterns, intent_type, response in _DIRECT_RULES:
             for pattern in patterns:
-                if re.match(pattern, lower, re.IGNORECASE):
+                if re.match(pattern, direct_text, re.IGNORECASE):
                     return IntentResult(intent=intent_type, domain=Domain.SYSTEM,
                         confidence=1.0, strategy=IntentStrategy.DIRECT, direct_response=response)
 
