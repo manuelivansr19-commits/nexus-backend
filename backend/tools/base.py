@@ -59,6 +59,15 @@ class ToolResult:
             return f"[TOOL:{self.tool_name}] {self.output}"
         return f"[TOOL:{self.tool_name}] {str(self.output)[:500]}"
 
+    def to_user_string(self) -> str:
+        """Texto para MOSTRAR al usuario: sin la etiqueta interna [TOOL:...]."""
+        text = self.metadata.get("user_text") if isinstance(self.metadata, dict) else None
+        if text:
+            return str(text)
+        if isinstance(self.output, str):
+            return self.output
+        return str(self.output)[:500]
+
 
 class BaseTool(abc.ABC):
     """

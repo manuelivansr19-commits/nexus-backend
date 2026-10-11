@@ -123,6 +123,16 @@ _INTENT_TOOLS: dict[str, list[str]] = {
     "system_status": ["system_status"],
 }
 
+# Consultas EXPLICITAS de hora. Con limite de palabra: no coincide con
+# "ahora", "horario", "ahorita" ni "a la hora de decidir".
+_CLOCK_QUERY_RE = re.compile(
+    r"\bqu[eé]\s+horas?\b"
+    r"|\bhora\s+(?:actual|exacta)\b"
+    r"|\b(?:cu[aá]l\s+es|dime|dame|me\s+das)\s+la\s+hora\b"
+    r"|^\W*hora\W*$",
+    re.IGNORECASE,
+)
+
 @dataclass
 class IntentResult:
     intent:            IntentType
@@ -175,7 +185,7 @@ class IntentRouter:
             candidate_tools = ["memory_search"]
             requires_tool   = True
             strategy        = IntentStrategy.TOOL
-        elif "hora" in lower:
+        elif _CLOCK_QUERY_RE.search(lower) and not requires_planning:
             candidate_tools = ["clock"]
             requires_tool   = True
             strategy        = IntentStrategy.TOOL

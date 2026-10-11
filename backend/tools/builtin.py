@@ -29,10 +29,20 @@ class ClockTool(BaseTool):
 
     @property
     def intent_keywords(self) -> list[str]:
-        return ["hora", "tiempo", "fecha", "día", "time", "date", "clock", "cuando"]
+        # Frases explicitas: find_by_intent compara por SUBCADENA, asi que
+        # "hora"/"tiempo"/"día"/"date"/"cuando" sueltas coinciden con "ahora",
+        # "candidate", "cuando puedas", etc.
+        return ["qué hora", "que hora", "hora actual", "hora exacta",
+                "qué día es", "que dia es", "qué fecha", "que fecha", "fecha de hoy"]
 
     async def execute(self, tool_input: ToolInput) -> ToolResult:
         now = datetime.now()
+        # Texto para el usuario en espanol, sin depender del locale del sistema.
+        _dias = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+        _meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+                  "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+        user_text = (f"Son las {now.strftime('%H:%M')} del {_dias[now.weekday()]} "
+                     f"{now.day} de {_meses[now.month - 1]} de {now.year}.")
         return ToolResult(
             success=True,
             output={
@@ -41,6 +51,7 @@ class ClockTool(BaseTool):
                 "iso":  now.isoformat(),
             },
             tool_name=self.name,
+            metadata={"user_text": user_text},
         )
 
 

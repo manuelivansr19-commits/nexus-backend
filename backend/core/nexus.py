@@ -297,7 +297,17 @@ class NexusCore:
             tool_context_strings = self._executor.collect_context_strings(exec_results)
             tools_used = [r.tool_name for r in exec_results if r.success]
             if tool_context_strings and intent_result.strategy == IntentStrategy.TOOL:
-                combined = "\n".join(tool_context_strings)
+                # Respuesta directa al usuario: sin la etiqueta [TOOL:...], que es
+                # solo contexto interno para el modelo.
+                user_texts = []
+                for r in exec_results:
+                    tr = getattr(r, "tool_result", None)
+                    if getattr(r, "success", False) and tr:
+                        fmt = (getattr(tr, "to_user_string", None)
+                               or getattr(tr, "to_context_string", None))
+                        if fmt:
+                            user_texts.append(fmt())
+                combined = "\n".join(user_texts) or "\n".join(tool_context_strings)
                 self._save_to_memory(message, combined)
                 elapsed = int((time.perf_counter() - started) * 1000)
                 return NexusResponse(text=combined, provider="tool",
