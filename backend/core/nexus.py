@@ -389,6 +389,7 @@ class NexusCore:
                     "Instala Ollama localmente para habilitar respuestas completas."),
                     "provider": "none", "model": "none", "fallback": False, "is_local": True}
         if self._legacy_router is not None:
+            from backend.router import AllProvidersUnavailable, degraded_text
             try:
                 from backend.providers.base import GenerateRequest, Message as PMessage
                 gen_req = GenerateRequest(prompt=prompt, system=system,
@@ -398,8 +399,15 @@ class NexusCore:
                 return {"text": result.response.text, "provider": result.response.provider,
                         "model": result.response.model, "fallback": result.fallback,
                         "is_local": result.local_mode}
-            except Exception as e:
-                return {"text": f"Error de inferencia: {str(e)[:200]}",
+            except AllProvidersUnavailable as e:
+                logger.warning("[%s] Modo degradado, proveedores no disponibles: %s",
+                               request_id, e.reasons)
+                return {"text": degraded_text(e.reasons),
+                        "provider": "none", "model": "none", "fallback": False, "is_local": False}
+            except Exception:
+                # El detalle va solo a logs; al usuario no se le muestra el error crudo.
+                logger.exception("[%s] Error de inferencia (router legacy)", request_id)
+                return {"text": degraded_text({}),
                         "provider": "none", "model": "none", "fallback": False, "is_local": False}
         return {"text": "NEXUS: Sin motor de inferencia configurado.",
                 "provider": "none", "model": "none", "fallback": False, "is_local": False}
