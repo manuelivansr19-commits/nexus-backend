@@ -118,7 +118,9 @@ class NexusCore:
     def __init__(self, inference=None, memory=None, intent_router=None,
                  context_manager=None, executor=None, evaluator=None,
                  autonomy_loop=None, knowledge_engine=None,
-                 task_state=None, model_router=None):
+                 task_state=None, model_router=None,
+                 persistent_memory=None):
+        self._persistent_memory = persistent_memory
         self._inference     = inference
         self._legacy_router = model_router
         self._memory        = memory
@@ -133,6 +135,15 @@ class NexusCore:
     async def process(self, message, system_prompt=DEFAULT_SYSTEM,
                       history=None, project="", request_id="") -> NexusResponse:
         started = time.perf_counter()
+
+        # 0. Memoria persistente (opcional): comandos explicitos "recuerda / olvida /
+        # corrige". Capa aparte: no modifica la tarea activa ni el contexto (solo LEE
+        # la tarea activa para conservar su task_id) y no guarda este turno en la
+        # memoria de conversacion, para que "olvida" realmente olvide.
+        if self._persistent_memory is not None:
+            pm_response = self._handle_persistent_memory(message, project, request_id, started)
+            if pm_response is not None:
+                return pm_response
 
         # 1. Intent routing
         intent_result = None
@@ -327,7 +338,8 @@ class NexusCore:
             try:
                 bundle = self._context.assemble(message=contextual_message,
                     system_prompt=system_prompt, intent=intent_result,
-                    history=history or [], tool_results=tool_context_strings, project=project)
+                    history=history or [], tool_results=tool_context_strings, project=project,
+                    **self._pm_context_kwargs(active_task))
                 assembled_message = bundle.assembled_prompt
                 final_history     = bundle.history
                 context_tokens    = bundle.estimated_tokens
@@ -484,6 +496,37 @@ class NexusCore:
                 provider="error", model="none", fallback=False, local_mode=False,
                 duration_ms=elapsed, intent=intent_result.intent.value,
                 domain=intent_result.domain.value, task_id=task_id)
+
+    def _handle_persistent_memory(self, message, project, request_id, started):
+        """Comandos de memoria persistente. Devuelve NexusResponse, o None si no es un comando."""
+        active_task_id = None
+        if self._task_state:
+            try:
+                pending = self._task_state.list_pending()
+                active_task_id = pending[0].task_id if pending else None
+            except Exception:
+                active_task_id = None
+        try:
+            text = self._persistent_memory.handle_message(
+                message, project=project, task_id=active_task_id)
+        except Exception:
+            logger.exception("[%s] Memoria persistente fallo; el mensaje sigue su curso normal",
+                             request_id)
+            return None
+        if text is None:
+            return None
+        logger.info("[%s] Comando de memoria persistente atendido", request_id)
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return NexusResponse(text=text, provider="memory", model="persistent",
+            fallback=False, local_mode=True, duration_ms=elapsed,
+            intent="memory_command", domain="general", is_local=True,
+            task_id=active_task_id, behavior=Behavior.RESPONDER.value)
+
+    def _pm_context_kwargs(self, active_task):
+        """kwargs extra para ContextManager.assemble; vacio si no hay memoria persistente."""
+        if self._persistent_memory is None:
+            return {}
+        return {"task_id": getattr(active_task, "task_id", None)}
 
     def _save_to_memory(self, user_msg, assistant_msg):
         if not self._memory:

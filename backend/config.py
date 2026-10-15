@@ -163,6 +163,13 @@ CONTEXT_TOKEN_LIMIT = _int_env("CONTEXT_TOKEN_LIMIT", 6000)
 # Max memory entries returned per search
 MEMORY_SEARCH_LIMIT = _int_env("MEMORY_SEARCH_LIMIT", 8)
 
+# Memoria persistente (opcional): guarda solo ante una instruccion explicita del usuario.
+# Aislamiento por proyecto unicamente (no hay aislamiento por identidad de usuario).
+PERSISTENT_MEMORY_ENABLED       = _os.getenv("PERSISTENT_MEMORY_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+PERSISTENT_MEMORY_MAX_PER_SCOPE = _int_env("PERSISTENT_MEMORY_MAX_PER_SCOPE", 500)
+PERSISTENT_MEMORY_MAX_CHARS     = _int_env("PERSISTENT_MEMORY_MAX_CHARS", 500)
+PERSISTENT_MEMORY_CONTEXT_LIMIT = _int_env("PERSISTENT_MEMORY_CONTEXT_LIMIT", 5)
+
 # Intent confidence threshold below which we fall back to LLM classification
 INTENT_CONFIDENCE_THRESHOLD = 0.75
 

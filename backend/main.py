@@ -23,6 +23,9 @@ from backend.core.nexus import NexusCore
 from backend.core.intent import IntentRouter
 from backend.core.context import ContextManager
 from backend.core.memory import Memory, MemoryType, SQLiteMemoryStore, RAMMemoryStore
+from backend.core.persistent_memory import PersistentMemory, normalize_scope
+from backend.config import (PERSISTENT_MEMORY_ENABLED, PERSISTENT_MEMORY_MAX_PER_SCOPE,
+    PERSISTENT_MEMORY_MAX_CHARS, PERSISTENT_MEMORY_CONTEXT_LIMIT)
 from backend.core.executor import Executor
 from backend.core.evaluation import Evaluator
 from backend.core.planner import Planner
@@ -130,10 +133,22 @@ async def lifespan(application: FastAPI):
     except Exception: knowledge_engine = None
     try: task_state_mgr = TaskStateManager("nexus_tasks.db")
     except Exception: task_state_mgr = None
+    persistent_memory = None
+    if PERSISTENT_MEMORY_ENABLED:
+        try:
+            persistent_memory = PersistentMemory(
+                memory._store,
+                max_per_scope=PERSISTENT_MEMORY_MAX_PER_SCOPE,
+                max_chars=PERSISTENT_MEMORY_MAX_CHARS,
+                context_limit=PERSISTENT_MEMORY_CONTEXT_LIMIT)
+        except Exception:
+            logger.exception("Memoria persistente no disponible; NEXUS sigue sin ella")
+            persistent_memory = None
     tool_registry = create_default_registry(memory)
     register_future_tools(tool_registry)
     intent_router   = IntentRouter(registry=tool_registry)
-    context_manager = ContextManager(memory=memory, knowledge_engine=knowledge_engine)
+    context_manager = ContextManager(memory=memory, knowledge_engine=knowledge_engine,
+        persistent_memory=persistent_memory)
     executor        = Executor(registry=tool_registry, memory=memory)
     evaluator       = Evaluator()
     planner         = Planner(inference_layer=inference_layer)
@@ -145,7 +160,8 @@ async def lifespan(application: FastAPI):
     nexus_core = NexusCore(inference=inference_layer, memory=memory,
         intent_router=intent_router, context_manager=context_manager,
         executor=executor, evaluator=evaluator, autonomy_loop=autonomy_loop_g,
-        knowledge_engine=knowledge_engine, task_state=task_state_mgr)
+        knowledge_engine=knowledge_engine, task_state=task_state_mgr,
+        persistent_memory=persistent_memory)
     logger.info("="*55)
     logger.info("NEXUS Omega v%s | Mode: %s | Cloud: %s", APP_VERSION, mode.value,
         "allowed" if ALLOW_CLOUD_INFERENCE else "BLOCKED")
@@ -264,12 +280,49 @@ async def nexus_memory():
 async def nexus_memory_clear(body: dict = {}):
     assert nexus_core is not None
     if not nexus_core._memory: return {"success":False}
+    # SEGURIDAD: un tipo invalido NUNCA se convierte en un borrado. Se rechaza con 400
+    # y no se toca nada (antes, `except ValueError` ejecutaba clear() sobre TODO).
+    raw_type = body.get("type", "working") if isinstance(body, dict) else None
     try:
-        mt    = MemoryType(body.get("type","working"))
-        count = nexus_core._memory._store.clear(mt)
-    except ValueError:
-        count = nexus_core._memory._store.clear()
+        mt = MemoryType(raw_type)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail={
+            "message": "Tipo de memoria no valido; no se borro nada.",
+            "valid_types": [t.value for t in MemoryType]})
+    # La memoria persistente vive en el tipo 'semantic': borrarlo por esta via exige confirm=true.
+    if (mt == MemoryType.SEMANTIC and getattr(nexus_core, "_persistent_memory", None) is not None
+            and not (isinstance(body, dict) and body.get("confirm") is True)):
+        raise HTTPException(status_code=409, detail={
+            "message": "El tipo 'semantic' contiene la memoria persistente del usuario; "
+                       "envia {\"type\":\"semantic\",\"confirm\":true} para borrarlo. No se borro nada."})
+    count = nexus_core._memory._store.clear(mt)
     return {"success":True,"cleared":count}
+
+@app.get("/api/nexus/persistent-memory")
+async def nexus_persistent_memory_list(project: str = ""):
+    assert nexus_core is not None
+    pm = getattr(nexus_core, "_persistent_memory", None)
+    if pm is None:
+        return {"success":False,"error":"Memoria persistente no disponible."}
+    try:
+        return {"success":True,"project":normalize_scope(project),
+                "memories":[r.to_dict() for r in pm.list_records(project, limit=100)],
+                "stats":pm.stats(project)}
+    except Exception:
+        logger.exception("Memoria persistente: no se pudo listar")
+        return {"success":False,"error":"Memoria persistente no disponible."}
+
+@app.delete("/api/nexus/persistent-memory/{entry_id}")
+async def nexus_persistent_memory_delete(entry_id: str, project: str = ""):
+    assert nexus_core is not None
+    pm = getattr(nexus_core, "_persistent_memory", None)
+    if pm is None:
+        return {"success":False,"error":"Memoria persistente no disponible."}
+    try:
+        return {"success":pm.forget(entry_id, project),"entry_id":entry_id}
+    except Exception:
+        logger.exception("Memoria persistente: no se pudo borrar")
+        return {"success":False,"error":"Memoria persistente no disponible."}
 
 @app.get("/api/nexus/tools")
 async def nexus_tools():

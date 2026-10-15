@@ -42,7 +42,9 @@ class ContextManager:
         memory=None,
         knowledge_engine=None,
         token_limit: int = CONTEXT_TOKEN_LIMIT,
+        persistent_memory=None,
     ) -> None:
+        self._persistent_memory = persistent_memory
         self._memory           = memory
         self._knowledge_engine = knowledge_engine
         self._token_limit      = token_limit
@@ -55,6 +57,7 @@ class ContextManager:
         history:       Optional[list[dict]] = None,
         tool_results:  Optional[list[str]]  = None,
         project:       str = "",
+        task_id:       Optional[str] = None,
     ) -> ContextBundle:
         sources: list[str] = []
         budget   = self._token_limit
@@ -104,6 +107,20 @@ class ContextManager:
                     sections.append(fact_ctx)
                     sources.append("fact_memory")
                     budget -= cost
+
+        # -- Memoria persistente (opcional, autorizada por el usuario) --
+        if self._persistent_memory and budget > 400:
+            try:
+                pm_ctx = self._persistent_memory.context_for(
+                    message, project=project, task_id=task_id)
+                if pm_ctx:
+                    cost = _estimate_tokens(pm_ctx)
+                    if budget - cost > 300:
+                        sections.append(pm_ctx)
+                        sources.append("persistent_memory")
+                        budget -= cost
+            except Exception:
+                pass
 
         # ── Tool results ──────────────────────────────────────
         if tool_results:
