@@ -384,14 +384,28 @@ class NexusCore:
                         "is_local": result.is_local}
             except AllRuntimesFailed as e:
                 logger.error("[%s] Todos los runtimes fallaron", request_id)
-                info = "; ".join(f"{rt}: {msg[:50]}" for rt, msg in e.runtime_errors[:3])
-                return {"text": (
-                    f"NEXUS no pudo completar la solicitud ahora mismo.\n"
-                    f"Razon: todos los motores de inferencia fallaron.\n"
-                    f"Detalle: {info}\n"
-                    f"Que puedes hacer: intenta de nuevo en unos momentos, "
-                    f"o verifica la conexion a Internet si usas proveedores cloud."),
-                    "provider": "none", "model": "none", "fallback": False, "is_local": False}
+                # Detalle de runtimes (solo logs): al usuario no se le muestra el error crudo.
+                raw = [(str(rt), str(msg)) for rt, msg in e.runtime_errors]
+                logger.error("[%s] Detalle de runtimes (solo logs): %s", request_id,
+                             " | ".join(f"{rt}: {msg[:300]}" for rt, msg in raw))
+                reasons = {}
+                for rt, msg in raw:
+                    up = msg.upper()
+                    if "RATE_LIMITED" in up or "RESOURCE_EXHAUSTED" in up or "429" in up:
+                        reasons[rt] = "rate_limit"
+                    elif "HIGH DEMAND" in up or "OVERLOADED" in up or "503" in up or "529" in up:
+                        reasons[rt] = "overloaded"
+                    else:
+                        reasons[rt] = "error"
+                try:
+                    from backend.router import degraded_text
+                    text = degraded_text(reasons)
+                except Exception:
+                    text = ("NEXUS está en modo degradado: no hay motores de IA disponibles "
+                            "por ahora. Esta respuesta no fue generada por un modelo de IA. "
+                            "Intenta de nuevo en un minuto.")
+                return {"text": text,
+                        "provider": "none", "model": "none", "fallback": False, "is_local": False}
             except CloudInferenceBlocked:
                 return {"text": (
                     "NEXUS esta en modo LOCAL_ONLY. "
