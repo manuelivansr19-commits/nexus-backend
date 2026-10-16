@@ -448,6 +448,33 @@ class NexusCore:
         return {"text": "NEXUS: Sin motor de inferencia configurado.",
                 "provider": "none", "model": "none", "fallback": False, "is_local": False}
 
+    def _finalize_autonomy_task(self, task_id, autonomy_result) -> None:
+        """Estado de la tarea segun el resultado REAL del loop (v3.8 Bloque 4A).
+
+        COMPLETED solo si el plan termino bien. FAILED nunca se marca COMPLETED.
+        PARTIAL / LIMIT_HIT / PROVIDER_LIMIT / NEEDS_INPUT quedan IN_PROGRESS para
+        que "continua" retome la misma tarea (sin persistencia de pasos, reinicia el plan).
+        """
+        if not (task_id and self._task_state):
+            return
+        from backend.core.task_state import TaskStatus
+        try:
+            trace = getattr(autonomy_result, "trace", None)
+            status = getattr(trace, "status", None)
+            value = getattr(status, "value", status)
+            text = getattr(autonomy_result, "text", None)
+            if getattr(autonomy_result, "needs_input", False):
+                self._task_state.update(task_id, TaskStatus.IN_PROGRESS, result=text)
+            elif value == "completed":
+                self._task_state.update(task_id, TaskStatus.COMPLETED, result=text)
+            elif value == "failed":
+                self._task_state.update(task_id, TaskStatus.FAILED, result=text,
+                                        error="El plan no pudo completarse.")
+            else:
+                self._task_state.update(task_id, TaskStatus.IN_PROGRESS, result=text)
+        except Exception:
+            logger.exception("No se pudo actualizar el estado de la tarea %s", task_id)
+
     async def _run_autonomy(self, message, intent_result, system_prompt,
                             history, started, request_id,
                             existing_task_id=None) -> NexusResponse:
@@ -472,10 +499,9 @@ class NexusCore:
                 context=message, request_id=request_id, use_llm_plan=True)
             elapsed = int((time.perf_counter() - started) * 1000)
             self._save_to_memory(message, autonomy_result.text)
-            if task_id and self._task_state:
-                self._task_state.update(task_id, TaskStatus.COMPLETED, result=autonomy_result.text)
+            self._finalize_autonomy_task(task_id, autonomy_result)
             if autonomy_result.needs_input:
-                return NexusResponse(text=autonomy_result.input_question or "Necesito mas informacion.",
+                return NexusResponse(text=autonomy_result.text or autonomy_result.input_question or "Necesito mas informacion.",
                     provider="autonomy", model="planner", fallback=False, local_mode=False,
                     duration_ms=elapsed, intent=intent_result.intent.value,
                     domain=intent_result.domain.value, task_id=task_id)
@@ -487,12 +513,14 @@ class NexusCore:
                 plan_id=plan.plan_id if plan else None,
                 plan_steps=len(plan.steps) if plan else 0,
                 autonomy_loops=autonomy_result.trace.loops, task_id=task_id)
-        except Exception as e:
+        except Exception:
+            # El detalle va solo a logs; ni la tarea ni el usuario reciben el error crudo.
+            logger.exception("[%s] Error en AutonomyLoop", request_id)
             if task_id and self._task_state:
                 from backend.core.task_state import TaskStatus
-                self._task_state.update(task_id, TaskStatus.FAILED, error=str(e)[:200])
+                self._task_state.update(task_id, TaskStatus.FAILED, error="Error interno del plan.")
             elapsed = int((time.perf_counter() - started) * 1000)
-            return NexusResponse(text=f"No pude completar la tarea: {str(e)[:200]}",
+            return NexusResponse(text="No pude completar la tarea por un error interno. Intenta de nuevo; si persiste, avisa para revisar los registros.",
                 provider="error", model="none", fallback=False, local_mode=False,
                 duration_ms=elapsed, intent=intent_result.intent.value,
                 domain=intent_result.domain.value, task_id=task_id)
