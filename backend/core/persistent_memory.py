@@ -206,6 +206,11 @@ _FORGET_BARE_RE = re.compile(
     _PREFIX + r"(?:olvida|borra|elimina)\s+(?:que\s+|lo\s+de\s+|sobre\s+|acerca\s+de\s+|"
     r"lo\s+que\s+dije\s+(?:sobre|de)\s+)?(?P<t>.+)$", _F)
 
+# "olvida el recuerdo" SIN id ni tema: no hay forma de saber cual es -> se pide aclaracion.
+_FORGET_NOREF_RE = re.compile(
+    _PREFIX + r"(?:olvida|borra|elimina|quita)\s+(?:de\s+(?:tu\s+)?memoria\s+)?"
+    r"(?:el|ese|este|aquel|un|alg[uú]n)\s+recuerdo\W*$", _F)
+
 _CORRECT_ID_RE = re.compile(
     _PREFIX + r"(?:corrige|actualiza|modifica|cambia)\s+(?:el\s+)?(?:recuerdo\s+)?(?P<id>pm-[0-9a-f]{8})"
     r"\s*(?:[:\-–]|->|=>|a\b|por\b|como\b)?\s*(?P<new>.+)$", _F)
@@ -568,6 +573,8 @@ class PersistentMemory:
             return ("forget_id", {"id": m.group("id").lower()})
         if _FORGET_ALL_RE.search(msg):
             return ("forget_all_ask", {})
+        if _FORGET_NOREF_RE.search(msg):
+            return ("forget_noref", {})
         for rx in _FORGET_EXPL_RES:
             m = rx.search(msg)
             if m:
@@ -711,6 +718,20 @@ class PersistentMemory:
             if not found:
                 return f"No encontré ningún recuerdo que coincida con «{a['t']}»{self._suffix(scope)}. No borré nada."
             return self._ask_forget(found, scope, a["t"])
+        if name == "forget_noref":
+            # Sin id ni tema nunca se adivina: 0 -> avisa; 1 -> confirmacion; varios -> lista
+            # y pide aclaracion SIN dejar confirmacion pendiente. Jamas llama a forget_all.
+            recs = self.list_records(scope, limit=self._max_per_scope)
+            if not recs:
+                return f"No tengo recuerdos guardados{self._suffix(scope)}; no hay nada que olvidar."
+            if len(recs) == 1:
+                return self._ask_forget(recs, scope, "")
+            shown = "\n".join("• " + self._fmt(r) for r in recs[:5])
+            more = (f"\n… y {len(recs) - 5} más (usa «qué recuerdas» para verlos)."
+                    if len(recs) > 5 else "")
+            return (f"Tengo {len(recs)} recuerdos guardados{self._suffix(scope)} y no sé cuál "
+                    f"quieres olvidar:\n{shown}{more}\nDime cuál con «olvida el recuerdo "
+                    "pm-xxxxxxxx» o de qué trata («olvida el recuerdo de …»). No he borrado nada.")
         if name == "forget_all_ask":
             n = len(self.list_records(scope, limit=self._max_per_scope))
             if n == 0:
