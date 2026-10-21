@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 import time
 from typing import Optional
 
@@ -30,15 +31,53 @@ from backend.providers.base import (
 )
 
 
-def _is_transient(error: Exception) -> bool:
-    """Errores que vale la pena reintentar (503, 429, timeout)."""
+class GeminiTimeout(RuntimeError):
+    """Timeout local de la llamada a Gemini (mismo mensaje de siempre; clase propia para clasificar)."""
+
+
+_QUOTA = "quota"
+_TRANSIENT = "transient"
+_PERMANENT = "permanent"
+
+_QUOTA_CODES = frozenset({429})
+_TRANSIENT_CODES = frozenset({408, 500, 502, 503, 504})
+_QUOTA_STATUSES = frozenset({"RESOURCE_EXHAUSTED"})
+_TRANSIENT_STATUSES = frozenset({"UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED"})
+# Solo se usan cuando el error NO trae code/status estructurados. Con limites de palabra:
+# "15003 tokens" no es un 503.
+_QUOTA_TEXT = re.compile(r"\b429\b|RESOURCE_EXHAUSTED|\bQUOTA\b|RATE[ _]?LIMIT|TOO MANY REQUESTS")
+_TRANSIENT_TEXT = re.compile(
+    r"\b50[0234]\b|\bUNAVAILABLE\b|SERVICE_UNAVAILABLE|DEADLINE|\bTIMEOUT\b|TIMED OUT")
+
+
+def _classify_error(error: Exception) -> str:
+    """
+    'quota'     cuota/limite agotado (429, RESOURCE_EXHAUSTED, QUOTA): reintentar solo gasta llamadas.
+    'transient' fallo del servidor o timeout (500/502/503/504, UNAVAILABLE, INTERNAL, DEADLINE): reintentable.
+    'permanent' todo lo demas (400, 401, 403, 404, respuesta vacia, errores de programa...): no reintentar.
+    """
+    if isinstance(error, (GeminiTimeout, asyncio.TimeoutError, TimeoutError)):
+        return _TRANSIENT
+    code = getattr(error, "code", None)
+    code = code if isinstance(code, int) and not isinstance(code, bool) else None
+    status = str(getattr(error, "status", "") or "").upper()
+    if code in _QUOTA_CODES or status in _QUOTA_STATUSES:
+        return _QUOTA
+    if code in _TRANSIENT_CODES or status in _TRANSIENT_STATUSES:
+        return _TRANSIENT
+    if code is not None:
+        return _PERMANENT          # otro codigo HTTP estructurado: no se adivina por el texto
     text = str(error).upper()
-    return any(m in text for m in (
-        "503", "502", "500",
-        "429", "RESOURCE_EXHAUSTED", "RATE LIMIT", "TOO MANY REQUESTS", "QUOTA",
-        "TIMEOUT", "DEADLINE",
-        "SERVICE_UNAVAILABLE", "UNAVAILABLE",
-    ))
+    if _QUOTA_TEXT.search(text):
+        return _QUOTA
+    if _TRANSIENT_TEXT.search(text):
+        return _TRANSIENT
+    return _PERMANENT
+
+
+def _is_transient(error: Exception) -> bool:
+    """Errores que vale la pena reintentar (5xx y timeouts). La cuota agotada NO lo es."""
+    return _classify_error(error) == _TRANSIENT
 
 
 class GeminiProvider(BaseModelProvider):
@@ -92,8 +131,17 @@ class GeminiProvider(BaseModelProvider):
             except Exception as error:
                 last_error = error
                 is_last = attempt == GEMINI_MAX_RETRIES - 1
+                kind = _classify_error(error)
 
-                if is_last or not _is_transient(error):
+                if kind == _QUOTA:
+                    # Cuota agotada: reintentar solo gasta llamadas. Se relanza el error
+                    # original (su texto lo reconocen el router y el plan de autonomia).
+                    logger.warning(
+                        "Gemini cuota/limite alcanzado (%s); no se reintenta.",
+                        str(error)[:80],
+                    )
+                    raise
+                if is_last or kind != _TRANSIENT:
                     raise
 
                 delay = (2 ** attempt) + random.uniform(0.0, 1.0)
@@ -135,7 +183,7 @@ class GeminiProvider(BaseModelProvider):
             )
         except asyncio.TimeoutError as e:
             elapsed = time.perf_counter() - started
-            raise RuntimeError(f"Gemini timeout después de {elapsed:.0f}s") from e
+            raise GeminiTimeout(f"Gemini timeout después de {elapsed:.0f}s") from e
 
         text = getattr(response, "text", None)
         if not text or not text.strip():
