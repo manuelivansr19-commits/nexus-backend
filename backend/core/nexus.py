@@ -56,6 +56,27 @@ _STOP_TRIGGERS = re.compile(
 _VAGUE_OBJECT_PATTERN = re.compile(r"\b(esto|eso|ello|lo)\b\s*[\.\!\?]*\s*$", re.IGNORECASE)
 _VAGUE_OBJECT_MAX_WORDS = 8
 
+# --- v3.8 Bloque 4B: continuidad real --------------------------------------
+# "continua" explicito (con id de tarea y/o "de todos modos" opcionales). El id de tarea
+# tiene la forma xxxxxxxx-xxx (uuid4[:12]).
+_RESUME_EXPLICIT = re.compile(
+    r"^(?:contin[uú]a|continuar|reanuda|reanudar|retoma|retomar|sigue|seguir)"
+    r"(?:\s+con\s+(?:el\s+plan|la\s+tarea|eso|esto))?"
+    r"(?:\s+(?P<id>[0-9a-f]{8}-[0-9a-f]{3}))?"
+    r"(?P<force>\s+de\s+todos\s+modos)?[\s!\.,]*$",
+    re.IGNORECASE,
+)
+# Confirmaciones aisladas: solo retoman con UNA candidata clara y reciente.
+_ACK_WORDS = re.compile(
+    r"^(si|sí|ok|okay|dale|vale|listo|adelante|ahora|hazlo|va|perfecto|de acuerdo)"
+    r"[\s!\.,]*$",
+    re.IGNORECASE,
+)
+_NO_WORD = re.compile(r"^no[\s!\.,]*$", re.IGNORECASE)
+_ACK_RESUME_WINDOW_SECONDS = 1800    # "si" aislado solo retoma una pausa de <= 30 min
+_AUTONOMY_TASK_INTENTS = {i.value for i in (IntentType.TASK, IntentType.DESIGN,
+                                            IntentType.ANALYSIS, IntentType.RESEARCH)}
+
 
 class Behavior(str, Enum):
     """
@@ -183,6 +204,14 @@ class NexusCore:
             # Confirmación corta ("sí", "ok", "dale"...) con tarea pendiente:
             # se trata como FOLLOW_UP para reutilizar la lógica ya existente,
             # en vez de dejar que caiga a clasificación genérica de CHAT.
+            # Continuidad real (v3.8 Bloque 4B): "continua"/"si"/"no" sobre tareas abiertas.
+            # Si devuelve None, el mensaje sigue por la logica de follow-up de siempre.
+            if self._task_state:
+                resume_response = await self._handle_resume_message(
+                    message, system_prompt, history, started, request_id)
+                if resume_response is not None:
+                    return resume_response
+
             if (self._task_state and intent_result.intent != IntentType.FOLLOW_UP
                     and _SHORT_CONFIRMATIONS.match(message.strip())):
                 if self._task_state.list_pending():
@@ -203,7 +232,7 @@ class NexusCore:
                     elif task.status.value == "pending" or task.status.value == "in_progress":
                         elapsed = int((time.perf_counter() - started) * 1000)
                         return NexusResponse(
-                            text=f"Tarea '{task.description[:80]}' esta en estado: {task.status.value}. Procesando ahora...",
+                            text=f"Tarea '{task.description[:80]}' esta en estado: {task.status.value} y todavia no tiene resultado guardado.",
                             provider="task_state", model="memory",
                             fallback=False, local_mode=True, duration_ms=elapsed,
                             intent="follow_up", domain=task.domain, task_id=task.task_id,
@@ -448,12 +477,175 @@ class NexusCore:
         return {"text": "NEXUS: Sin motor de inferencia configurado.",
                 "provider": "none", "model": "none", "fallback": False, "is_local": False}
 
+    # ------------------------------------------------------------------
+    # v3.8 Bloque 4B - continuidad real
+    # ------------------------------------------------------------------
+    def _guarded_status(self, task_id, status, **kw) -> bool:
+        """Cambia el estado solo desde PENDING/IN_PROGRESS (nunca reactiva CANCELLED)."""
+        from backend.core.task_state import TaskStatus
+        fn = getattr(self._task_state, "transition", None)
+        if fn is None:                       # task_state sin soporte 4B (dobles de prueba)
+            self._task_state.update(task_id, status, **kw)
+            return True
+        return fn(task_id, status, (TaskStatus.PENDING, TaskStatus.IN_PROGRESS), **kw)
+
+    def _resume_reply(self, text, task, started) -> NexusResponse:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return NexusResponse(text=text, provider="task_state", model="memory",
+            fallback=False, local_mode=True, duration_ms=elapsed, intent="follow_up",
+            domain=task.domain if task else "general",
+            task_id=task.task_id if task else None, behavior=Behavior.CONTINUAR.value)
+
+    @staticmethod
+    def _open_tasks_list(pending) -> str:
+        lines = [f"- {t.task_id}: {t.description[:60]}" for t in pending[:3]]
+        if len(pending) > 3:
+            lines.append(f"- … y {len(pending) - 3} más")
+        return "\n".join(lines)
+
+    async def _handle_resume_message(self, message, system_prompt, history, started,
+                                     request_id):
+        """
+        "continua" retoma de verdad el plan guardado; "si"/"ok" aislados solo lo hacen con
+        UNA candidata reciente y pausada por cuota/limite/parcial; "no" no cambia nada.
+        Devuelve NexusResponse, o None para dejar el mensaje en el flujo de siempre.
+        """
+        text = message.strip()
+        explicit = _RESUME_EXPLICIT.match(text)
+        ack = None if explicit else _ACK_WORDS.match(text)
+        no = None if (explicit or ack) else _NO_WORD.match(text)
+        if not (explicit or ack or no):
+            return None
+        try:
+            pending = self._task_state.list_pending()
+        except Exception:
+            logger.exception("[%s] No se pudo leer las tareas abiertas", request_id)
+            return None
+        if not pending:
+            return None
+        from types import SimpleNamespace
+        from backend.core import plan_checkpoint as pc
+        from backend.core.planner import StepStatus
+        from backend.core.task_state import TaskStatus
+
+        wanted = explicit.group("id") if explicit else None
+        if wanted:
+            task = next((t for t in pending if t.task_id.lower() == wanted.lower()), None)
+            if task is None:
+                return self._resume_reply(
+                    f"No encontré una tarea abierta con el id {wanted}. Las abiertas son:\n"
+                    + self._open_tasks_list(pending), None, started)
+        elif no:
+            if len(pending) > 1:
+                return self._resume_reply(
+                    f"Entendido, no cambié nada. Tengo {len(pending)} tareas abiertas; di "
+                    "\"continúa <id>\" para retomar una o \"cancela la tarea\" para detener "
+                    "la más reciente:\n" + self._open_tasks_list(pending), None, started)
+            task = pending[0]
+            return self._resume_reply(
+                f"Entendido, no cambié nada. La tarea '{task.description[:80]}' sigue abierta: "
+                "di \"continúa\" para retomarla o \"cancela la tarea\" para detenerla.",
+                task, started)
+        elif len(pending) > 1:
+            return self._resume_reply(
+                f"Tengo {len(pending)} tareas abiertas y no quiero retomar la equivocada. "
+                "Dime cuál con \"continúa <id>\":\n" + self._open_tasks_list(pending),
+                None, started)
+        else:
+            task = pending[0]
+
+        now = time.time()
+        cp = pc.load_checkpoint(self._task_state, task.task_id)
+        desc = task.description[:80]
+        if pc.is_running(cp, now):
+            ago = int(now - float(cp.get("saved_at") or now))
+            return self._resume_reply(
+                f"La tarea '{desc}' sigue en ejecución (último avance hace {ago} s). No inicié "
+                "otra ejecución; espera a que termine o di \"cancela la tarea\".", task, started)
+
+        autonomy_ok = bool(task.intent in _AUTONOMY_TASK_INTENTS and AUTONOMY_ENABLED
+                           and self._autonomy_loop)
+        if ack:
+            # Un "si" aislado nunca inicia una tarea ambigua: solo retoma una pausa clara.
+            clear_pause = (autonomy_ok and task.status == TaskStatus.IN_PROGRESS
+                           and pc.validate_checkpoint(cp)
+                           and cp.get("run_state") == "paused"
+                           and cp.get("pause_reason") in pc.RESUMABLE_REASONS
+                           and (now - task.updated_at) <= _ACK_RESUME_WINDOW_SECONDS)
+            if not clear_pause:
+                return None
+        elif not autonomy_ok:
+            return None
+
+        if (isinstance(cp, dict) and cp.get("run_state") == "paused"
+                and cp.get("pause_reason") == "needs_input"):
+            return self._resume_reply(
+                task.result or f"La tarea '{desc}' espera datos tuyos antes de seguir; todavía "
+                "no puedo incorporar tu respuesta al plan en curso.", task, started)
+
+        plan, notice = None, ""
+        if pc.validate_checkpoint(cp):
+            def repeatable(step):
+                return ((not step.tool) or (not self._executor)
+                        or pc.tool_is_repeatable(self._executor, step.tool))
+            plan, uncertain, _reset = pc.restore_plan(cp, repeatable)
+            force = bool(explicit and explicit.group("force"))
+            if uncertain and not force:
+                names = "; ".join(f"'{s.description[:60]}' (herramienta {s.tool})"
+                                  for s in uncertain)
+                return self._resume_reply(
+                    f"La tarea '{desc}' quedó a medias en un paso con herramienta que no "
+                    f"repito sola porque no puedo asegurar que no tuvo efectos: {names}. "
+                    "Si quieres repetirlo, di \"continúa de todos modos\"; si no, \"cancela "
+                    "la tarea\".", task, started)
+            for s in uncertain:
+                s.status, s.result, s.error = StepStatus.PENDING, None, None
+            goal, intent_type = cp["goal"], cp["intent_type"]
+            done_n = sum(1 for s in plan.steps if s.status.value == "done")
+            notice = (f"Retomo la tarea '{desc}' desde el primer paso pendiente "
+                      f"({done_n} de {len(plan.steps)} pasos ya completados se conservan).")
+        else:
+            goal, intent_type = task.description, task.intent
+            notice = ("No tengo un avance guardado válido de esta tarea, así que la reinicio "
+                      "desde el principio con su descripción original (máx. 500 caracteres).")
+
+        store = pc.CheckpointStore(self._task_state, task.task_id, goal, intent_type)
+        if not store.claim():
+            if store.claim_reason == "running":
+                return self._resume_reply(
+                    f"La tarea '{desc}' ya se está ejecutando; no inicié otra ejecución.",
+                    task, started)
+            return self._resume_reply(
+                f"La tarea '{desc}' ya no está activa (fue cancelada o finalizada); no la "
+                "reanudé.", task, started)
+
+        logger.info("[%s] Reanudando tarea %s (checkpoint=%s)", request_id, task.task_id,
+                    "si" if plan is not None else "no")
+        intent_ns = SimpleNamespace(intent=SimpleNamespace(value=intent_type),
+                                    domain=SimpleNamespace(value=task.domain))
+        resp = await self._run_autonomy(
+            goal, intent_ns, system_prompt, history, started, request_id,
+            existing_task_id=task.task_id, resume={"plan": plan, "store": store},
+            user_message=message)
+        resp.behavior = Behavior.CONTINUAR.value
+        resp.text = f"{notice}\n\n{resp.text}"
+        return resp
+
+    def _inactive_task_response(self, task_id, intent_result, started) -> NexusResponse:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return NexusResponse(
+            text="La tarea ya no está activa (fue cancelada o finalizada), así que no la ejecuté.",
+            provider="task_state", model="inactive", fallback=False, local_mode=True,
+            duration_ms=elapsed, intent=intent_result.intent.value,
+            domain=intent_result.domain.value, task_id=task_id)
+
     def _finalize_autonomy_task(self, task_id, autonomy_result) -> None:
         """Estado de la tarea segun el resultado REAL del loop (v3.8 Bloque 4A).
 
         COMPLETED solo si el plan termino bien. FAILED nunca se marca COMPLETED.
         PARTIAL / LIMIT_HIT / PROVIDER_LIMIT / NEEDS_INPUT quedan IN_PROGRESS para
-        que "continua" retome la misma tarea (sin persistencia de pasos, reinicia el plan).
+        que "continua" retome la misma tarea desde el checkpoint (v3.8 Bloque 4B). Una tarea
+        CANCELLED nunca se pisa: los cambios de estado son condicionales (transition).
         """
         if not (task_id and self._task_state):
             return
@@ -463,21 +655,27 @@ class NexusCore:
             status = getattr(trace, "status", None)
             value = getattr(status, "value", status)
             text = getattr(autonomy_result, "text", None)
+            if value == "cancelled":
+                return          # la cancelo el usuario: el estado CANCELLED no se toca
             if getattr(autonomy_result, "needs_input", False):
-                self._task_state.update(task_id, TaskStatus.IN_PROGRESS, result=text)
+                new_status, kw = TaskStatus.IN_PROGRESS, {"result": text}
             elif value == "completed":
-                self._task_state.update(task_id, TaskStatus.COMPLETED, result=text)
+                new_status, kw = TaskStatus.COMPLETED, {"result": text}
             elif value == "failed":
-                self._task_state.update(task_id, TaskStatus.FAILED, result=text,
-                                        error="El plan no pudo completarse.")
+                new_status, kw = TaskStatus.FAILED, {
+                    "result": text, "error": "El plan no pudo completarse."}
             else:
-                self._task_state.update(task_id, TaskStatus.IN_PROGRESS, result=text)
+                new_status, kw = TaskStatus.IN_PROGRESS, {"result": text}
+            if not self._guarded_status(task_id, new_status, **kw):
+                logger.info("Tarea %s ya no esta activa (cancelada?); estado no modificado",
+                            task_id)
         except Exception:
             logger.exception("No se pudo actualizar el estado de la tarea %s", task_id)
 
     async def _run_autonomy(self, message, intent_result, system_prompt,
                             history, started, request_id,
-                            existing_task_id=None) -> NexusResponse:
+                            existing_task_id=None, resume=None,
+                            user_message=None) -> NexusResponse:
         from backend.core.task_state import TaskStatus
         task_id = existing_task_id
         if self._task_state:
@@ -487,18 +685,28 @@ class NexusCore:
                 # estrategia AUTONOMY. Se reutiliza esa tarea en vez de
                 # crear una segunda, para no perder el hilo:
                 #   MISMA TAREA + NUEVA OPERACIÓN + NUEVO INTENT = MISMO task_id
-                self._task_state.update(task_id, TaskStatus.IN_PROGRESS)
+                kw = {} if resume else {"result": None, "error": None}
+                if not self._guarded_status(task_id, TaskStatus.IN_PROGRESS, **kw):
+                    return self._inactive_task_response(task_id, intent_result, started)
             else:
                 task = self._task_state.create(description=message,
                     intent=intent_result.intent.value, domain=intent_result.domain.value)
                 task_id = task.task_id
                 self._task_state.update(task_id, TaskStatus.IN_PROGRESS)
         try:
-            autonomy_result = await self._autonomy_loop.run(
-                goal=message, intent_type=intent_result.intent.value,
-                context=message, request_id=request_id, use_llm_plan=True)
+            run_kwargs = dict(goal=message, intent_type=intent_result.intent.value,
+                              context=message, request_id=request_id, use_llm_plan=True)
+            if (task_id and self._task_state
+                    and getattr(self._autonomy_loop, "supports_checkpoint", False)):
+                from backend.core.plan_checkpoint import CheckpointStore
+                store = (resume or {}).get("store") or CheckpointStore(
+                    self._task_state, task_id, message, intent_result.intent.value)
+                run_kwargs["checkpoint"] = store
+                if (resume or {}).get("plan") is not None:
+                    run_kwargs["plan"] = resume["plan"]
+            autonomy_result = await self._autonomy_loop.run(**run_kwargs)
             elapsed = int((time.perf_counter() - started) * 1000)
-            self._save_to_memory(message, autonomy_result.text)
+            self._save_to_memory(user_message or message, autonomy_result.text)
             self._finalize_autonomy_task(task_id, autonomy_result)
             if autonomy_result.needs_input:
                 return NexusResponse(text=autonomy_result.text or autonomy_result.input_question or "Necesito mas informacion.",
@@ -518,7 +726,7 @@ class NexusCore:
             logger.exception("[%s] Error en AutonomyLoop", request_id)
             if task_id and self._task_state:
                 from backend.core.task_state import TaskStatus
-                self._task_state.update(task_id, TaskStatus.FAILED, error="Error interno del plan.")
+                self._guarded_status(task_id, TaskStatus.FAILED, error="Error interno del plan.")
             elapsed = int((time.perf_counter() - started) * 1000)
             return NexusResponse(text="No pude completar la tarea por un error interno. Intenta de nuevo; si persiste, avisa para revisar los registros.",
                 provider="error", model="none", fallback=False, local_mode=False,

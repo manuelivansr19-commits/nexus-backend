@@ -1,5 +1,5 @@
 """NEXUS Omega -- Task State Manager v3.8.0"""
-import json, sqlite3, time, uuid
+import json, sqlite3, threading, time, uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -38,6 +38,10 @@ class Task:
             "error":       self.error,
             "age_minutes": round((time.time() - self.created_at) / 60, 1),
         }
+
+_KEEP = object()                 # "no tocar este campo" en transition()
+_META_LOCK = threading.RLock()   # lectura-modificacion-escritura atomica de metadata
+
 
 class TaskStateManager:
     _SCHEMA = """
@@ -132,6 +136,80 @@ class TaskStateManager:
         by_status = {r[0]: r[1] for r in self._conn.execute(
             "SELECT status, COUNT(*) FROM tasks GROUP BY status").fetchall()}
         return {"total": total, "by_status": by_status}
+
+    # ------------------------------------------------------------------
+    # v3.8 Bloque 4B: metadata y transiciones protegidas (metodos nuevos)
+    # ------------------------------------------------------------------
+    def get_metadata(self, task_id) -> dict:
+        """metadata de la tarea como dict; {} si no existe, esta vacia o es invalida."""
+        row = self._conn.execute(
+            "SELECT metadata FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        if not row:
+            return {}
+        try:
+            data = json.loads(row["metadata"] or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def merge_metadata(self, task_id, patch=None, *, mutator=None, allowed_status=None):
+        """
+        Actualiza metadata de forma atomica (no cambia status, result ni updated_at).
+        - patch: dict que se fusiona (dict.update).
+        - mutator: funcion(dict) -> dict | None; devolver None aborta sin escribir.
+        - allowed_status: iterable de TaskStatus; si el estado actual no esta, no escribe.
+        Devuelve el metadata escrito, o None si no se escribio.
+        """
+        with _META_LOCK:
+            row = self._conn.execute(
+                "SELECT status, metadata FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if not row:
+                return None
+            if allowed_status is not None and row["status"] not in {
+                    getattr(s, "value", s) for s in allowed_status}:
+                return None
+            try:
+                data = json.loads(row["metadata"] or "{}")
+            except (ValueError, TypeError):
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            if mutator is not None:
+                data = mutator(dict(data))
+                if data is None:
+                    return None
+            if patch:
+                data.update(patch)
+            self._conn.execute("UPDATE tasks SET metadata=? WHERE task_id=?",
+                               (json.dumps(data, ensure_ascii=False), task_id))
+            self._conn.commit()
+            return data
+
+    def transition(self, task_id, new_status: TaskStatus, allowed_from,
+                   result=_KEEP, error=_KEEP) -> bool:
+        """
+        Cambia el estado SOLO si el actual esta en allowed_from (UPDATE condicional).
+        Asi una tarea CANCELLED/COMPLETED/FAILED no se reactiva ni se pisa por accidente.
+        result/error: si no se indican, se conservan. Devuelve True si cambio una fila.
+        """
+        allowed = [getattr(s, "value", s) for s in allowed_from]
+        if not allowed:
+            return False
+        sets, params = ["status=?", "updated_at=?"], [new_status.value, time.time()]
+        if result is not _KEEP:
+            sets.append("result=?")
+            params.append(result)
+        if error is not _KEEP:
+            sets.append("error=?")
+            params.append(error)
+        params.append(task_id)
+        params.extend(allowed)
+        marks = ",".join("?" * len(allowed))
+        cur = self._conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} WHERE task_id=? AND status IN ({marks})",
+            params)
+        self._conn.commit()
+        return cur.rowcount > 0
 
     def close(self):
         self._conn.close()

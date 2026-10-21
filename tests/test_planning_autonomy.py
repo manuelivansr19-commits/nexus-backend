@@ -293,7 +293,9 @@ class TestNexusTaskState(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task.status, TaskStatus.IN_PROGRESS)
         self.assertEqual(resp.model, "autonomy:provider_limit")
         self.assertNotIn("RESOURCE_EXHAUSTED", resp.text)
-        self.assertIn(RESTART_NOTE, resp.text)
+        # 4B: con checkpoint guardado la nota promete retomar (ya no "reinicia").
+        self.assertIn("lo retomo desde el primer paso", resp.text)
+        self.assertNotIn(RESTART_NOTE, resp.text)
 
     async def test_extremo_a_extremo_exito(self):
         resp, task = await self._run(_loop(FakeInference(_ok)), msg="Analiza mi negocio")

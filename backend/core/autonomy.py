@@ -28,6 +28,7 @@ class LoopStatus(str, Enum):
     LIMIT_HIT   = "limit_hit"
     NEEDS_INPUT = "needs_input"
     PROVIDER_LIMIT = "provider_limit"   # cuota / sobrecarga del proveedor (v3.8 Bloque 4A)
+    CANCELLED = "cancelled"             # la tarea fue cancelada durante la ejecucion (4B)
 
 
 @dataclass
@@ -88,6 +89,27 @@ def _is_provider_limit(text) -> bool:
     return any(m in upper for m in _LIMIT_MARKERS) or bool(_LIMIT_CODES.search(upper))
 
 
+def resume_note(done: int) -> str:
+    """Nota VERAZ cuando el avance si quedo guardado (4B)."""
+    if done > 0:
+        return ("Nota: guardé el avance; si me dices \"continúa\", retomo desde el primer "
+                f"paso pendiente y conservo los {done} paso(s) completado(s).")
+    return "Nota: guardé el plan; si me dices \"continúa\", lo retomo desde el primer paso."
+
+
+NEEDS_INPUT_NOTE = (
+    "Nota: todavía no puedo incorporar tu respuesta al plan en curso; vuelve a enviar la "
+    "solicitud con esos datos incluidos. \"continúa\" solo repite esta pregunta."
+)
+
+
+def _with_input_note(question, checkpoint_saved: bool = False) -> str:
+    if not checkpoint_saved:
+        return _with_restart_note(question)
+    base = (question or "").strip() or "Necesito más información."
+    return f"{base}\n\n{NEEDS_INPUT_NOTE}"
+
+
 def _with_restart_note(question) -> str:
     base = (question or "").strip() or "Necesito más información."
     return f"{base}\n\n{RESTART_NOTE}"
@@ -98,6 +120,8 @@ class AutonomyLoop:
     Loop autónomo — usa InferenceLayer para los pasos LLM.
     Totalmente desacoplado de proveedores concretos.
     """
+
+    supports_checkpoint = True    # run() acepta plan= y checkpoint= (v3.8 Bloque 4B)
 
     def __init__(
         self,
@@ -130,6 +154,8 @@ class AutonomyLoop:
         context:      str  = "",
         request_id:   str  = "",
         use_llm_plan: bool = False,
+        plan:         Optional[Plan] = None,
+        checkpoint=None,
     ) -> AutonomyResult:
         started = time.perf_counter()
         trace   = ExecutionTrace(goal=goal)
@@ -138,11 +164,13 @@ class AutonomyLoop:
                     request_id, goal[:80], intent_type)
 
         try:
-            plan = await self._planner.plan(
-                goal=goal, intent_type=intent_type,
-                use_llm=use_llm_plan, context=context,
-            )
-            plan.steps = plan.steps[:self._max_steps]
+            if plan is None:
+                plan = await self._planner.plan(
+                    goal=goal, intent_type=intent_type,
+                    use_llm=use_llm_plan, context=context,
+                )
+                plan.steps = plan.steps[:self._max_steps]
+            # (con plan= recibido se reanuda ese plan: pasos DONE conservados, sin replanificar)
             trace.plan_id = plan.plan_id
         except Exception as e:
             logger.exception("[%s] Error creando plan", request_id)
@@ -151,15 +179,24 @@ class AutonomyLoop:
             trace.duration_ms = int((time.perf_counter() - started) * 1000)
             return AutonomyResult(text=trace.final_text, trace=trace)
 
+        self._save_checkpoint(checkpoint, plan, "running")
         loops = 0
         provider_limited = False
+        cancelled = False
+        ck_saved = False
         while not plan.done and loops < self._max_loops:
+            if self._should_stop(checkpoint):
+                cancelled = True       # tarea cancelada: no se ejecuta ningun paso mas
+                break
             step = plan.next_step()
             if step is None:
                 break
 
             loops += 1
             plan.mark_running(step.step_id)
+            # El estado RUNNING se guarda ANTES de ejecutar: si algo se interrumpe, queda
+            # constancia de que este paso pudo haberse ejecutado (ver plan_checkpoint).
+            self._save_checkpoint(checkpoint, plan, "running")
             step_started = time.perf_counter()
 
             output, error = await self._execute_step(
@@ -196,17 +233,31 @@ class AutonomyLoop:
                 step.retries += 1
                 step.status = StepStatus.PENDING
             elif evaluation.status == EvalStatus.NEEDS_USER_INPUT:
+                step.status = StepStatus.PENDING      # la pregunta no completa el paso
+                ck_saved = self._save_checkpoint(checkpoint, plan, "paused", "needs_input")
                 trace.status        = LoopStatus.NEEDS_INPUT
                 trace.input_question = evaluation.question
                 trace.duration_ms   = int((time.perf_counter() - started) * 1000)
                 trace.loops         = loops
                 return AutonomyResult(
-                    text=_with_restart_note(evaluation.question) or "Necesito más información.",
+                    text=_with_input_note(evaluation.question, ck_saved) or "Necesito más información.",
                     trace=trace, plan=plan, needs_input=True,
                     input_question=evaluation.question,
                 )
             elif evaluation.status == EvalStatus.FAILED:
                 plan.mark_failed(step.step_id, error or "Error desconocido.")
+            self._save_checkpoint(checkpoint, plan, "running")
+
+        if cancelled:
+            done_n = sum(1 for s in plan.steps if s.status == StepStatus.DONE)
+            trace.status = LoopStatus.CANCELLED
+            trace.loops = loops
+            trace.duration_ms = int((time.perf_counter() - started) * 1000)
+            trace.final_text = (f"La tarea fue detenida. Se conservan {done_n} de "
+                                f"{len(plan.steps)} pasos completados.")
+            logger.info("[%s] AutonomyLoop CANCELADO | loops=%d | done=%d",
+                        request_id, loops, done_n)
+            return AutonomyResult(text=trace.final_text, trace=trace, plan=plan)
 
         if loops >= self._max_loops and not plan.done and not provider_limited:
             logger.warning("[%s] Límite de loops (%d)", request_id, self._max_loops)
@@ -226,7 +277,13 @@ class AutonomyLoop:
             limit_reason = "loop_limit"
         else:
             limit_reason = ""
-        final_text = self._synthesize(plan, plan_eval, goal, limit_reason=limit_reason)
+        # Checkpoint final ANTES de sintetizar: la nota solo promete "retomo" si se guardo.
+        if plan.done:
+            ck_saved = self._save_checkpoint(checkpoint, plan, "finished")
+        else:
+            ck_saved = self._save_checkpoint(checkpoint, plan, "paused", limit_reason or "partial")
+        final_text = self._synthesize(plan, plan_eval, goal, limit_reason=limit_reason,
+                                      resume_saved=ck_saved)
         trace.final_text = final_text
 
         if provider_limited:
@@ -293,6 +350,27 @@ class AutonomyLoop:
         return None, NO_ENGINE_ERROR
 
     @staticmethod
+    def _save_checkpoint(checkpoint, plan, run_state, pause_reason="") -> bool:
+        """Guarda el avance si hay almacen. Nunca interrumpe el plan; True si se guardo."""
+        if checkpoint is None:
+            return False
+        try:
+            return bool(checkpoint.save(plan, run_state=run_state, pause_reason=pause_reason))
+        except Exception:
+            logger.exception("No se pudo guardar el checkpoint del plan")
+            return False
+
+    @staticmethod
+    def _should_stop(checkpoint) -> bool:
+        """True si la tarea fue cancelada (o ya no esta activa). Ante error, no detiene."""
+        if checkpoint is None:
+            return False
+        try:
+            return bool(checkpoint.should_stop())
+        except Exception:
+            return False
+
+    @staticmethod
     def _step_error(exc) -> str:
         """Error de un paso LLM. Cuota/sobrecarga -> marcador fijo (el detalle va a logs)."""
         detail = str(exc)
@@ -329,7 +407,8 @@ class AutonomyLoop:
                  "Proporciona el resultado concreto de este paso.")
         return text
 
-    def _synthesize(self, plan, plan_eval, goal: str, limit_reason: str = "") -> str:
+    def _synthesize(self, plan, plan_eval, goal: str, limit_reason: str = "",
+                    resume_saved: bool = False) -> str:
         results = plan.collect_results()
         incomplete = [s for s in plan.steps
                       if s.status not in (StepStatus.DONE, StepStatus.SKIPPED)]
@@ -364,7 +443,7 @@ class AutonomyLoop:
             text += "\n\nAlgunos pasos fallaron o no pudieron ejecutarse."
 
         if limit_reason or done > 0:
-            text += f"\n\n{RESTART_NOTE}"
+            text += "\n\n" + (resume_note(done) if resume_saved else RESTART_NOTE)
         return text
 
     def _save_to_memory(self, goal, result, plan_id) -> None:
