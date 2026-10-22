@@ -658,7 +658,8 @@ Nunca seas superficial. Entrega valor real, perspectiva de poder y aplicación p
                 return true;
             }
 
-            if (/(callate|cállate|silencio|para|stop|basta)/.test(lower)) {
+            const STOP_CMD_RE = /^\s*[\u00a1!.,]*\s*(?:ya\s+)?(?:callate|c\u00e1llate|silencio|para|stop|basta)(?:\s+(?:de\s+hablar|ya|por\s+favor))?\s*[!.,]*\s*$/;
+            if (STOP_CMD_RE.test(lower)) {
                 window.speechSynthesis.cancel();
                 stopTimer();
                 addMessage('NEXUS: De acuerdo.', 'nexus');
