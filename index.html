@@ -878,7 +878,7 @@ Reglas de estilo (tus respuestas pueden leerse en voz alta):
         function voiceSummary(t) {
             let s = cleanText(t).replace(/^•\s*/gm, '').replace(/\n+/g, '. ')
                 .replace(/([:;,])\.\s/g, '$1 ').replace(/\.\s*\./g, '.').replace(/\s{2,}/g, ' ').trim();
-            const VOICE_MAX_CHARS = 3500; // NEXUS_VOZ_COMPLETA_V1: Android lee hasta ~4000 por vez
+            const VOICE_MAX_CHARS = 1000000; // NEXUS_VOZ_PARTES_V1: sin tope; la lectura se parte en trozos
             if (s.length <= VOICE_MAX_CHARS) return s;
             const cut = s.slice(0, VOICE_MAX_CHARS);
             const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
@@ -887,6 +887,37 @@ Reglas de estilo (tus respuestas pueden leerse en voz alta):
 
         try { const _addMessage = addMessage; addMessage = function (text, type, save) { return _addMessage(type === 'user' ? text : cleanText(text), type, save); }; } catch (e) { console.warn('addMessage no envuelto', e); }
         try { const _speak = speak; speak = function (text) { return _speak(voiceSummary(text)); }; } catch (e) { console.warn('speak no envuelto', e); }
+        // NEXUS_VOZ_PARTES_V1: la voz lee TODO, por partes (frases completas), sin recortar
+        function splitForSpeech(text, max) {
+            const out = [];
+            let rest = String(text || '').trim();
+            while (rest.length > max) {
+                let cut = Math.max(rest.lastIndexOf('. ', max), rest.lastIndexOf('? ', max), rest.lastIndexOf('! ', max),
+                                   rest.lastIndexOf('; ', max), rest.lastIndexOf(', ', max));
+                if (cut < max * 0.4) cut = rest.lastIndexOf(' ', max);
+                if (cut < 1) cut = max;
+                out.push(rest.slice(0, cut + 1).trim());
+                rest = rest.slice(cut + 1).trim();
+            }
+            if (rest) out.push(rest);
+            return out;
+        }
+        try {
+            const _ssSpeak = window.speechSynthesis.speak.bind(window.speechSynthesis);
+            window.speechSynthesis.speak = function (u) {
+                const parts = splitForSpeech(u && u.text, 700);
+                if (parts.length <= 1) return _ssSpeak(u);
+                parts.forEach(function (p, i) {
+                    const c = new SpeechSynthesisUtterance(p);
+                    c.lang = u.lang; c.rate = u.rate; c.pitch = u.pitch; c.volume = u.volume;
+                    if (u.voice) c.voice = u.voice;
+                    if (i === 0) c.onstart = u.onstart;
+                    if (i === parts.length - 1) c.onend = u.onend;
+                    c.onerror = u.onerror;
+                    _ssSpeak(c);
+                });
+            };
+        } catch (e) { console.warn('speechSynthesis.speak no envuelto', e); }
     </script>
 </body>
 </html>
