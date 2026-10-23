@@ -878,10 +878,11 @@ Reglas de estilo (tus respuestas pueden leerse en voz alta):
         function voiceSummary(t) {
             let s = cleanText(t).replace(/^•\s*/gm, '').replace(/\n+/g, '. ')
                 .replace(/([:;,])\.\s/g, '$1 ').replace(/\.\s*\./g, '.').replace(/\s{2,}/g, ' ').trim();
-            if (s.length <= 420) return s;
-            const cut = s.slice(0, 420);
+            const VOICE_MAX_CHARS = 3500; // NEXUS_VOZ_COMPLETA_V1: Android lee hasta ~4000 por vez
+            if (s.length <= VOICE_MAX_CHARS) return s;
+            const cut = s.slice(0, VOICE_MAX_CHARS);
             const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
-            return (end > 120 ? cut.slice(0, end + 1) : cut) + ' El resto lo tienes en pantalla.';
+            return (end > 1000 ? cut.slice(0, end + 1) : cut) + ' El resto lo tienes en pantalla.';
         }
 
         try { const _addMessage = addMessage; addMessage = function (text, type, save) { return _addMessage(type === 'user' ? text : cleanText(text), type, save); }; } catch (e) { console.warn('addMessage no envuelto', e); }
