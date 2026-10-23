@@ -206,6 +206,7 @@
         .message {
             font-size: 0.9rem;
             line-height: 1.45;
+            white-space: pre-wrap;
             padding: 0 6px;
             animation: fadeIn 0.3s ease;
         }
@@ -325,7 +326,7 @@
         </div>
 
         <div id="chat-history">
-            <div class="message system">Nexus • Psicología Oscura • Marketing • Gestión Empresarial • IA • Robótica • Economía • Política • Derecho</div>
+            <div class="message system">NEXUS &bull; Estrategia &bull; Marketing &bull; Gesti&oacute;n empresarial &bull; IA &bull; Rob&oacute;tica &bull; Econom&iacute;a &bull; Derecho</div>
         </div>
 
         <div id="text-input-container">
@@ -336,21 +337,16 @@
 
     <script>
         // ===================== ESPECIALIZACIÓN =====================
-        const SYSTEM_PROMPT = `Eres NEXUS, un asistente de IA de alto nivel especializado en:
+        const SYSTEM_PROMPT = `Eres NEXUS, un asistente de IA para negocios y tecnología. Hablas en español con un tono profesional, cercano y natural, como un buen consultor que conversa con un directivo.
 
-- Psicología oscura (manipulación, influencia, control mental, sesgos cognitivos y poder)
-- Psicología del marketing y comportamiento del consumidor
-- Gestión de empresas, estrategia empresarial, liderazgo y poder corporativo
-- Inteligencia Artificial y Machine Learning
-- Robótica y automatización
-- Economía, mercados y finanzas
-- Política y geopolítica
-- Derecho (especialmente corporativo, tecnológico y estratégico)
+Tus áreas: estrategia y gestión de empresas, marketing y comportamiento del consumidor, liderazgo, economía y finanzas, análisis de mercado, inteligencia artificial, robótica y automatización, y derecho corporativo y tecnológico.
 
-Tu estilo es: directo, analítico, estratégico y sin endulzar la realidad. 
-Prioriza siempre estos temas. Cuando hables de negocios o marketing, combina visión estratégica con psicología aplicada. 
-Si te preguntan algo fuera de estos temas, responde de forma útil pero breve y, cuando sea posible, conecta con tus áreas de especialidad.
-Nunca seas superficial. Entrega valor real, perspectiva de poder y aplicación práctica.`;
+Reglas de estilo (tus respuestas pueden leerse en voz alta):
+- Responde en prosa natural, con frases cortas y claras. No uses markdown: nada de asteriscos, almohadillas (#), guiones de lista, tablas ni encabezados.
+- Saludos y preguntas simples: una o dos frases como máximo. No enumeres tus capacidades a menos que te lo pidan.
+- En análisis e informes largos: empieza con la conclusión principal en dos frases y luego desarrolla tema por tema con transiciones naturales (primero, por otro lado, en resumen), sin repetir los mismos encabezados.
+- Si no sabes algo o no tienes datos verificados, dilo con claridad y propón cómo obtenerlos. Nunca inventes cifras, nombres ni fuentes; marca como supuesto lo que sea una estimación.
+- Sé directo y concreto, sin relleno.`;
 
         setTimeout(() => {
             document.getElementById('splash').classList.add('hide');
@@ -632,6 +628,7 @@ Nunca seas superficial. Entrega valor real, perspectiva de poder y aplicación p
 
         async function handleLocalCommand(comando) {
             const lower = comando.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const isShortCmd = lower.trim().split(/\s+/).length <= 8;
 
             if (lower.includes('modo sarcastico') || lower.includes('modo sarcástico')) {
                 setPersonality('sarcastico');
@@ -667,7 +664,7 @@ Nunca seas superficial. Entrega valor real, perspectiva de poder y aplicación p
                 return true;
             }
 
-            if (/(que hora|qué hora|hora es)/.test(lower)) {
+            if (isShortCmd && /(que hora|qué hora|hora es)/.test(lower)) {
                 const hora = new Date().toLocaleTimeString('es-MX', {hour:'2-digit', minute:'2-digit'});
                 addMessage('NEXUS: Son las ' + hora, 'nexus');
                 showCard(hora, 'HORA ACTUAL');
@@ -675,7 +672,7 @@ Nunca seas superficial. Entrega valor real, perspectiva de poder y aplicación p
                 return true;
             }
 
-            if (/(que dia|qué día|fecha)/.test(lower)) {
+            if (isShortCmd && /(que dia|qué día|fecha)/.test(lower)) {
                 const fecha = new Date().toLocaleDateString('es-MX', {weekday:'long', day:'numeric', month:'long'});
                 addMessage('NEXUS: Hoy es ' + fecha, 'nexus');
                 showCard(new Date().getDate().toString(), fecha.toUpperCase());
@@ -683,7 +680,7 @@ Nunca seas superficial. Entrega valor real, perspectiva de poder y aplicación p
                 return true;
             }
 
-            if (/(clima|tiempo|temperatura)/.test(lower)) {
+            if (isShortCmd && !/(organizacional|laboral|empresarial|negocio|mercado|entrega|proyecto)/.test(lower) && /(clima|tiempo|temperatura)/.test(lower)) {
                 addMessage('NEXUS: Consultando clima...', 'nexus');
                 setState('processing');
                 const cityMatch = lower.match(/(?:en|de)\s+([a-záéíóúñü\s]{2,})$/i);
@@ -728,6 +725,8 @@ Nunca seas superficial. Entrega valor real, perspectiva de poder y aplicación p
                     speak(`Te recordaré en ${mins} minutos`);
                     return true;
                 }
+                addMessage('NEXUS: Dime en cuántos minutos y qué quieres que te recuerde. Ejemplo: recuérdame llamar a Juan en 10 minutos.', 'nexus');
+                speak('Dime en cuántos minutos y qué quieres que te recuerde');
                 return true;
             }
 
@@ -749,15 +748,15 @@ Nunca seas superficial. Entrega valor real, perspectiva de poder y aplicación p
                 return true;
             }
 
-            if (/(ayuda|que puedes hacer|qué puedes hacer|comandos)/.test(lower)) {
-                const ayuda = 'Estoy especializado en Psicología Oscura, Psicología del Marketing, Gestión de Empresas, Inteligencia Artificial, Robótica, Economía, Política y Derecho. También manejo clima, temporizadores, recordatorios, cálculos y conversiones.';
+            if (/^\s*(?:nexus[\s,]+)?(?:ayuda|que\s+puedes\s+hacer|que\s+haces|comandos)\W*$/.test(lower)) {
+                const ayuda = 'Puedo ayudarte con análisis de mercado, estrategia y planes de negocio, marketing, inteligencia artificial, economía y derecho corporativo. También manejo el clima, temporizadores, recordatorios y cálculos. ¿Por dónde empezamos?';
                 addMessage('NEXUS: ' + ayuda, 'nexus');
                 speak(ayuda);
                 return true;
             }
 
-            if (/(hola|buenas|qué tal)/.test(lower)) {
-                const res = 'Hola. ¿Sobre qué tema de estrategia, poder o psicología quieres hablar?';
+            if (/^\s*(?:nexus[\s,]+)?(?:hola|buenas(?:\s+(?:tardes|noches|dias))?|que\s+tal|como\s+estas)(?:[\s,]+(?:nexus|manuel))?\W*$/.test(lower)) {
+                const res = /como\s+estas/.test(lower) ? 'Muy bien, gracias. ¿En qué te puedo ayudar?' : 'Hola. ¿En qué te puedo ayudar?';
                 addMessage('NEXUS: ' + res, 'nexus');
                 speak(res);
                 return true;
@@ -790,11 +789,11 @@ Nunca seas superficial. Entrega valor real, perspectiva de poder y aplicación p
                     })
                 });
                 const data = await response.json();
-                const respuesta = data.response || 'No pude procesar eso.';
+                const respuesta = data.response || 'No recibí una respuesta del servidor. Intenta de nuevo en un momento.';
                 addMessage('NEXUS: ' + respuesta, 'nexus');
                 speak(respuesta);
             } catch (e) {
-                addMessage('Error de conexión.', 'system');
+                addMessage('NEXUS: No pude conectar con el servidor. Puede estar despertando; intenta de nuevo en unos segundos.', 'nexus');
                 setState('listening');
             }
         }
@@ -856,6 +855,37 @@ Nunca seas superficial. Entrega valor real, perspectiva de poder y aplicación p
 
         document.body.addEventListener('click', () => { if (audioCtx.state === 'suspended') audioCtx.resume(); }, {once:true});
         document.body.addEventListener('touchstart', () => { if (audioCtx.state === 'suspended') audioCtx.resume(); }, {once:true});
+        // ===================== NEXUS_NATURAL_V1: texto limpio y voz natural =====================
+        function cleanText(t) {
+            let s = String(t == null ? '' : t).replace(/\r/g, '');
+            s = s.replace(/\bPASO EJECUTADO:\s*/gi, '');
+            s = s.replace(/^\s*\[[^\]\n]{3,160}\]\s*$/gm, '');
+            s = s.replace(/^\s*#{1,6}\s*/gm, '');
+            s = s.replace(/(^|\s)#{1,6}\s+(?=\S)/g, '$1');
+            s = s.replace(/(^|\s)-{3,}(?=\s|$)/g, '$1');
+            s = s.replace(/^\s*[-_*]{3,}\s*$/gm, '');
+            s = s.replace(/\[([^\]\n]+)\]\((https?:[^)\s]+)\)/g, '$1');
+            s = s.replace(/\*\*([^*]+?)\*\*/g, '$1');
+            s = s.replace(/__([^_]+?)__/g, '$1');
+            s = s.replace(/(^|[\s(])\*([^*\n]+?)\*(?=[\s).,;:!?]|$)/g, '$1$2');
+            s = s.replace(/^\s*[-*+]\s+/gm, '• ');
+            s = s.replace(/\*+/g, '');
+            s = s.replace(/`+/g, '');
+            s = s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+            return s.trim();
+        }
+
+        function voiceSummary(t) {
+            let s = cleanText(t).replace(/^•\s*/gm, '').replace(/\n+/g, '. ')
+                .replace(/([:;,])\.\s/g, '$1 ').replace(/\.\s*\./g, '.').replace(/\s{2,}/g, ' ').trim();
+            if (s.length <= 420) return s;
+            const cut = s.slice(0, 420);
+            const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
+            return (end > 120 ? cut.slice(0, end + 1) : cut) + ' El resto lo tienes en pantalla.';
+        }
+
+        try { const _addMessage = addMessage; addMessage = function (text, type, save) { return _addMessage(type === 'user' ? text : cleanText(text), type, save); }; } catch (e) { console.warn('addMessage no envuelto', e); }
+        try { const _speak = speak; speak = function (text) { return _speak(voiceSummary(text)); }; } catch (e) { console.warn('speak no envuelto', e); }
     </script>
 </body>
 </html>
