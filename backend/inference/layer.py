@@ -1,7 +1,7 @@
 ﻿"""NEXUS Ω — Inference Layer v3.8.0"""
 from __future__ import annotations
 import time
-from backend.config import logger
+from backend.config import CONFIG_WARNINGS, logger
 from backend.inference.errors import AllRuntimesFailed, CloudInferenceBlocked, InferenceError, classify_error
 from backend.inference.models import InferenceMode, InferenceRequest, InferenceResult, RuntimeHealth, RuntimeType
 from backend.inference.policy import InferencePolicy
@@ -11,6 +11,10 @@ class InferenceLayer:
     def __init__(self, registry: InferenceRegistry, policy: InferencePolicy):
         self._registry = registry
         self._policy   = policy
+
+    @property
+    def policy(self) -> InferencePolicy:
+        return self._policy
 
     async def generate(self, request: InferenceRequest) -> InferenceResult:
         started      = time.perf_counter()
@@ -70,6 +74,8 @@ class InferenceLayer:
             "mode":            self._policy.mode.value,
             "deprecated":      self._policy.mode.value == "cloud_first",
             "cloud_allowed":   self._policy.cloud_allowed,
+            "cloud_enabled":   self._policy.cloud_enabled,
+            "config_warnings": list(CONFIG_WARNINGS),
             "local_runtimes":  local_status,
             "cloud_runtimes":  cloud_status,
             "registry":        self._registry.stats(),

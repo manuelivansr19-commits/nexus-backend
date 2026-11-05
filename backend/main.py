@@ -10,10 +10,10 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from backend.config import (
     ALL_SECRETS, ALLOW_CLOUD_INFERENCE, APP_VERSION, AUTONOMY_ENABLED,
-    DEFAULT_SYSTEM, INFERENCE_MODE, KNOWLEDGE_DB_PATH, KNOWLEDGE_CONTEXT_LIMIT,
-    KNOWLEDGE_MIN_CONFIDENCE, MAX_EXECUTION_LOOPS, MAX_HISTORY_TURNS,
-    MAX_OUTPUT_TOKENS, MAX_PLAN_STEPS, MAX_RETRIES_PER_STEP,
-    MEMORY_DB_PATH, REQUEST_TIMEOUT_SECONDS, USE_OLLAMA_ONLY, logger,
+    CLOUD_RUNTIMES_ENABLED, DEFAULT_SYSTEM, INFERENCE_MODE, KNOWLEDGE_DB_PATH,
+    KNOWLEDGE_CONTEXT_LIMIT, KNOWLEDGE_MIN_CONFIDENCE, MAX_EXECUTION_LOOPS,
+    MAX_HISTORY_TURNS, MAX_OUTPUT_TOKENS, MAX_PLAN_STEPS, MAX_RETRIES_PER_STEP,
+    MEMORY_DB_PATH, REQUEST_TIMEOUT_SECONDS, TASKS_DB_PATH, USE_OLLAMA_ONLY, logger,
 )
 from backend.inference import (
     InferenceLayer, InferenceMode, InferencePolicy, InferenceRegistry,
@@ -120,9 +120,13 @@ async def lifespan(application: FastAPI):
     registry.register(GeminiRuntime())
     registry.register(GroqRuntime(http_client=http_client))
     registry.register(OpenRouterRuntime(http_client=http_client))
+    # INFERENCE_MODE / ALLOW_CLOUD_INFERENCE ya son los valores EFECTIVOS (config.py).
+    # Defensa extra: si aun así el modo no fuese válido, se cierra la nube (no se abre).
+    allow_cloud = ALLOW_CLOUD_INFERENCE
     try: mode = InferenceMode(INFERENCE_MODE)
-    except ValueError: mode = InferenceMode.LOCAL_FIRST
-    policy = InferencePolicy(mode=mode, allow_cloud=ALLOW_CLOUD_INFERENCE)
+    except ValueError: mode, allow_cloud = InferenceMode.LOCAL_ONLY, False
+    policy = InferencePolicy(mode=mode, allow_cloud=allow_cloud,
+                             cloud_enabled=CLOUD_RUNTIMES_ENABLED)
     inference_layer = InferenceLayer(registry=registry, policy=policy)
     try:
         store  = SQLiteMemoryStore(MEMORY_DB_PATH)
@@ -131,7 +135,7 @@ async def lifespan(application: FastAPI):
         memory = Memory(RAMMemoryStore())
     try: knowledge_engine = KnowledgeEngine(db_path=KNOWLEDGE_DB_PATH)
     except Exception: knowledge_engine = None
-    try: task_state_mgr = TaskStateManager("nexus_tasks.db")
+    try: task_state_mgr = TaskStateManager(TASKS_DB_PATH)
     except Exception: task_state_mgr = None
     persistent_memory = None
     if PERSISTENT_MEMORY_ENABLED:
@@ -184,21 +188,33 @@ async def home(): return FileResponse("index.html")
 @app.head("/")
 async def home_head(): return Response(status_code=200)
 
+def _effective_inference() -> tuple:
+    """Política efectiva ÚNICA que informan /health, /api/nexus/status,
+    /api/nexus/config y /api/inference/health: la de la capa de inferencia en
+    ejecución; antes del arranque (sin lifespan), los valores efectivos de config."""
+    if inference_layer is not None:
+        p = inference_layer.policy
+        return p.mode.value, p.cloud_allowed
+    return INFERENCE_MODE, ALLOW_CLOUD_INFERENCE
+
 @app.get("/health")
 async def health():
+    mode, cloud = _effective_inference()
     return {"status":"healthy","system":"NEXUS","version":APP_VERSION,
-            "inference_mode":INFERENCE_MODE,"cloud_allowed":ALLOW_CLOUD_INFERENCE,
+            "inference_mode":mode,"cloud_allowed":cloud,
             "max_output_tokens":MAX_OUTPUT_TOKENS}
 
 @app.get("/api/nexus/status")
 async def nexus_status():
+    mode, cloud = _effective_inference()
     return {"status":"online","system":"NEXUS","version":APP_VERSION,
-            "inference_mode":INFERENCE_MODE,"cloud_allowed":ALLOW_CLOUD_INFERENCE}
+            "inference_mode":mode,"cloud_allowed":cloud}
 
 @app.get("/api/nexus/config")
 async def nexus_config():
-    return {"version":APP_VERSION,"inference_mode":INFERENCE_MODE,
-            "cloud_allowed":ALLOW_CLOUD_INFERENCE,"autonomy_enabled":AUTONOMY_ENABLED,
+    mode, cloud = _effective_inference()
+    return {"version":APP_VERSION,"inference_mode":mode,
+            "cloud_allowed":cloud,"autonomy_enabled":AUTONOMY_ENABLED,
             "knowledge_enabled":bool(knowledge_engine),"max_plan_steps":MAX_PLAN_STEPS,
             "max_execution_loops":MAX_EXECUTION_LOOPS,"multi_provider":True}
 

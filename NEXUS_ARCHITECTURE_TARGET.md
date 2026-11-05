@@ -84,12 +84,55 @@ Debe funcionar sin Internet. Los proveedores externos son recursos opcionales, n
 | 1.5 | Estabilización + modularización | ✅ Completo |
 | A | Local Engine Abstraction | ✅ Completo |
 | B | Local Model Runtime (llama.cpp + Ollama local) | ✅ Completo |
-| C | Offline Mode (NEXUS_LOCAL_ONLY) | ✅ Completo |
+| C | Offline Mode (NEXUS_LOCAL_ONLY) | ⚠️ Parcial: bloqueo de la nube verificado por pruebas (Fase 1 de la auditoría); modelo local real sin validar |
 | D | Model Router con disponibilidad real | ✅ Completo |
 | E | AURA Brain API (6 subsistemas) | ✅ Completo |
 | F | Hardware Interfaces (7 dispositivos) | ✅ Completo |
 | G | Head Computer Requirements | ✅ Documentado |
 | H | Simulation Layer | ✅ Completo |
+
+> Nota (auditoría, 2026-10-29): solo la fila C se actualizó con evidencia de pruebas. Las demás filas no se han revalidado en la auditoría. La numeración «Fase 1/2/3» de la auditoría es distinta de las fases A–H y de los «Próximos pasos» de este documento.
+
+---
+
+## Soberanía de inferencia — estado tras la Fase 1 de la auditoría
+
+Verificado el 2026-10-28 en Windows, Python 3.14.3, dependencias de `versiones.txt`. Este apartado recoge solo lo respaldado por pruebas reproducibles; no sustituye la validación con Gemini ni con un modelo local reales.
+
+### Implementado y verificado por pruebas
+
+| Comportamiento | Prueba |
+|---|---|
+| `NEXUS_LOCAL_ONLY=true` fuerza `local_only` y bloquea la nube, aunque `INFERENCE_MODE` pida otro modo | `tests/test_phase1_policy.py::TestResolveInference`, `tests/test_phase1_real_flow.py::TestNoExternalTraffic` |
+| Un valor no reconocido de `NEXUS_LOCAL_ONLY` (por ejemplo `ture`) cuenta como activado, con una advertencia que no repite el valor | `TestStrictBool`, escenario `local_only_flag_typo` |
+| `INFERENCE_MODE` inválido cae a `local_only` con la nube bloqueada y una advertencia visible; el arranque no se bloquea | `TestResolveInference`, escenario `invalid_mode` |
+| Solo Gemini queda permitido por defecto; Groq y OpenRouter requieren habilitación explícita; si Gemini falla no hay salto automático a otro proveedor cloud | `TestPolicyAllowlist`, `TestNoAutomaticFallback`, `TestNoAutomaticProviderFallback` |
+| `/health`, `/api/nexus/status`, `/api/nexus/config` y `/api/inference/health` informan la misma política efectiva | `TestEffectivePolicyConsistency` (10 escenarios) |
+| `TASKS_DB_PATH` configurable; sin la variable se conserva `nexus_tasks.db` en el directorio actual | `TestDatabasePaths` |
+| La suite usa bases en un directorio temporal y no modifica bases del directorio actual | `tests/conftest.py`, `TestSuiteDatabaseIsolation`, comprobación con canarios SHA-256 |
+
+Suite completa con `-v`: 605 passed, 1 skipped, 165 subtests passed, 2 warnings (531 de la línea base + 74 nuevas).
+
+### Variables de entorno de la política de inferencia
+
+| Variable | Valor por defecto | Efecto |
+|---|---|---|
+| `NEXUS_LOCAL_ONLY` | desactivada | Activada (o no reconocida): modo `local_only` y nube bloqueada |
+| `INFERENCE_MODE` | `local_first` | `local_first`, `local_only`, `cloud_first` (obsoleto) o `cloud_only`; cualquier otro valor cae a `local_only` |
+| `ALLOW_CLOUD_INFERENCE` | `true` | `false` nunca se relaja; prevalece la política más restrictiva |
+| `CLOUD_RUNTIMES_ENABLED` | `gemini` | Runtimes cloud habilitados, separados por comas (`gemini`, `groq`, `openrouter`); vacía = ninguno; los nombres desconocidos se ignoran con una advertencia |
+| `TASKS_DB_PATH` | `nexus_tasks.db` | Ruta de la base de tareas |
+
+La política efectiva se consulta en `GET /api/inference/health`, que además informa `cloud_enabled` y `config_warnings`. Las advertencias nunca incluyen el valor recibido.
+
+### Pendiente de validar (sin respaldo de pruebas)
+
+- Que un modelo local real (Ollama o llama.cpp) responda correctamente. Las pruebas de la Fase 1 solo demuestran ausencia de tráfico externo; `llama_cpp` sigue marcado como `SCAFFOLDED` en el código.
+- Una llamada real a Gemini con `google-genai` 2.33.0 y claves reales.
+- Persistencia en Render: no se ha verificado si el servicio tiene disco persistente ni los valores de `MEMORY_DB_PATH` y `KNOWLEDGE_DB_PATH`. Sin disco montado, el sistema de archivos de Render es efímero.
+- Groq y OpenRouter siguen desactivados por defecto hasta tener una evaluación de precisión comparable con Gemini; esa evaluación no existe todavía.
+- Al desplegar este cambio, Groq y OpenRouter dejan de funcionar como respaldo automático de Gemini.
+- Autenticación y protección de secretos (hallazgos A-01 y A-05): no se modificaron; las rutas siguen sin autenticación.
 
 ---
 
@@ -221,11 +264,11 @@ REQUEST_TIMEOUT_SECONDS=60
 | Chat funciona | `POST /api/nexus/chat` → respuesta |
 | Gemini con retry | Logs muestran reintentos en error 503 |
 | Fallback correcto | `fallback: true` cuando Gemini falla |
-| LOCAL_ONLY mode | `NEXUS_LOCAL_ONLY=true` → solo local provider |
+| LOCAL_ONLY mode | `NEXUS_LOCAL_ONLY=true` → política `local_only` y ningún intento de conexión a Gemini, Groq ni OpenRouter (`tests/test_phase1_real_flow.py`). La respuesta de un modelo local real no está validada |
 | Providers intercambiables | BaseModelProvider implementado × 5 |
 | Memoria abstraída | `POST /api/aura/perceive` + `GET /api/aura/status` |
 | Simulación funciona | `POST /api/aura/simulate` → eventos virtuales |
-| Tests pasan | `pytest tests/ -v` → 35+ tests OK |
+| Tests pasan | `pytest tests/ -v` → 605 passed, 1 skipped, 165 subtests passed (Python 3.14.3, 2026-10-28) |
 
 ### 🔜 Requiere hardware físico
 
@@ -259,7 +302,7 @@ REQUEST_TIMEOUT_SECONDS=60
 
 9. Adquirir Jetson Orin NX
 10. Instalar modelo GGUF local
-11. Verificar NEXUS_LOCAL_ONLY funciona sin Internet
+11. Verificar NEXUS_LOCAL_ONLY funciona sin Internet (la política ya bloquea la nube; falta validar un modelo local real sin conexión)
 12. Conectar cámara → pipeline visión
 13. Conectar LiDAR → detección obstáculos
 14. Conectar IMU → odometría básica
