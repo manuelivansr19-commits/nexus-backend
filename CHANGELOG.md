@@ -1,5 +1,15 @@
 # Changelog
 
+## [Fase 2] — acceso y secretos (rama local; sin desplegar)
+
+**Nuevo — backend/security/**: `settings.py`, `tokens.py`, `passwords.py`, `sessions.py`, `login_guard.py`, `ratelimit.py`,
+`routes.py` (tabla única de rutas con permiso y clase), `access.py` (middleware ASGI: encuadre HTTP, cuerpo de 1 MB con plazo,
+autenticación Bearer/cookie, CSRF, aislamiento por proyecto, límites de uso, login y unlock), `secrets_filter.py`, `outbound.py`, `cli.py`.
+**Actualizado:** `main.py` (middleware, CORS sin `*`, `boot_id` en `/api/nexus/status`), `inference/layer.py` y `router.py` (redacción de salida),
+`core/executor.py` (rechazo de argumentos con secreto), `core/persistent_memory.py` y `knowledge/engine.py` (rechazo en guardado explícito),
+`core/memory.py` (redacción en guardado implícito), `index.html` (pantalla de contraseña, cerrar sesión, «Borrar datos de este dispositivo»).
+**Docs:** `docs/FASE2_ACCESO_Y_SECRETOS.md` (variables, runbook R1–R6, límites). Sin dependencias nuevas.
+
 ## [3.7.0] — 2026-08-30
 
 ### Fase 4: Knowledge Engine

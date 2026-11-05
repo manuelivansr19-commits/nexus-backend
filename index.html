@@ -297,6 +297,22 @@
         @keyframes wake-flash { 0%{transform:scale(1)} 40%{transform:scale(1.12)} 100%{transform:scale(1)} }
         @keyframes ripple { 0%{transform:scale(1);opacity:0.45} 100%{transform:scale(1.55);opacity:0} }
         @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+
+        /* ===== Fase 2: inicio de sesión y herramientas de sesión ===== */
+        #login-overlay { position: fixed; inset: 0; z-index: 10000; display: none; align-items: center;
+            justify-content: center; background: rgba(5,8,16,0.94); }
+        #login-overlay.show { display: flex; }
+        #login-box { width: min(92vw, 340px); padding: 26px 22px; border-radius: 14px;
+            background: #0d1424; border: 1px solid rgba(120,160,255,0.35); color: #e8eefc; font-family: inherit; }
+        #login-box h2 { margin: 0 0 14px; font-size: 18px; letter-spacing: 2px; text-align: center; }
+        #login-box input { width: 100%; box-sizing: border-box; padding: 11px 12px; margin-bottom: 12px;
+            border-radius: 8px; border: 1px solid rgba(120,160,255,0.35); background: #060a14; color: #e8eefc; font-size: 16px; }
+        #login-box button { width: 100%; padding: 11px; border: 0; border-radius: 8px; cursor: pointer;
+            background: #3b6cff; color: #fff; font-size: 15px; }
+        #login-msg { min-height: 20px; margin-top: 10px; font-size: 13px; color: #ffb4a8; text-align: center; }
+        #session-tools { position: fixed; top: 8px; right: 8px; z-index: 9000; display: flex; gap: 6px; opacity: 0.75; }
+        #session-tools button { font-size: 11px; padding: 5px 8px; border-radius: 6px; cursor: pointer;
+            border: 1px solid rgba(120,160,255,0.3); background: rgba(13,20,36,0.85); color: #cfd9f5; }
     </style>
 </head>
 <body>
@@ -333,6 +349,20 @@
             <input type="text" id="text-input" placeholder="Escribe aquí..." autocomplete="off" />
             <button id="send-btn" onclick="sendTextMessage()">➤</button>
         </div>
+    </div>
+
+    <div id="login-overlay" role="dialog" aria-modal="true" aria-labelledby="login-title">
+        <form id="login-box" autocomplete="off">
+            <h2 id="login-title">NEXUS</h2>
+            <input type="password" id="login-password" placeholder="Contraseña" autocomplete="current-password" required />
+            <button type="submit" id="login-submit">Entrar</button>
+            <div id="login-msg" role="alert"></div>
+        </form>
+    </div>
+
+    <div id="session-tools">
+        <button type="button" id="logout-btn" style="display:none">Cerrar sesión</button>
+        <button type="button" id="wipe-btn" title="Borra del navegador el historial, los recordatorios y la personalidad">Borrar datos de este dispositivo</button>
     </div>
 
     <script>
@@ -918,6 +948,83 @@ Reglas de estilo (tus respuestas pueden leerse en voz alta):
                 });
             };
         } catch (e) { console.warn('speechSynthesis.speak no envuelto', e); }
+    </script>
+    <script>
+        // ===================== FASE 2: SESIÓN (cookie del servidor; el navegador nunca ve un token) =====================
+        (function () {
+            const overlay = document.getElementById('login-overlay');
+            const form = document.getElementById('login-box');
+            const pwd = document.getElementById('login-password');
+            const msg = document.getElementById('login-msg');
+            const logoutBtn = document.getElementById('logout-btn');
+            const wipeBtn = document.getElementById('wipe-btn');
+            const LOCAL_KEYS = ['nexus-history', 'nexus-reminders', 'nexus-personality'];
+            const _fetch = window.fetch.bind(window);
+
+            function showLogin(text) {
+                msg.textContent = text || '';
+                overlay.classList.add('show');
+                logoutBtn.style.display = 'none';
+                setTimeout(function () { try { pwd.focus(); } catch (e) {} }, 50);
+            }
+            function hideLogin() { overlay.classList.remove('show'); msg.textContent = ''; pwd.value = ''; }
+            async function refreshSessionState() {
+                try {
+                    const r = await _fetch('/api/auth/me');
+                    const d = await r.json();
+                    logoutBtn.style.display = d && d.authenticated ? '' : 'none';
+                } catch (e) { /* sin conexión: no se cambia nada */ }
+            }
+
+            // Cualquier 401 de la API (sesión vencida o ausente) muestra la pantalla de contraseña.
+            window.fetch = async function (input, init) {
+                const res = await _fetch(input, init);
+                try {
+                    const url = typeof input === 'string' ? input : (input && input.url) || '';
+                    if (res.status === 401 && url.indexOf('/api/') === 0 && url.indexOf('/api/auth/') !== 0) {
+                        showLogin('Sesión requerida.');
+                    }
+                } catch (e) { /* nada */ }
+                return res;
+            };
+
+            form.addEventListener('submit', async function (ev) {
+                ev.preventDefault();
+                msg.textContent = '';
+                try {
+                    const r = await _fetch('/api/auth/login', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ password: pwd.value })
+                    });
+                    if (r.status === 200) { hideLogin(); refreshSessionState(); return; }
+                    pwd.value = '';
+                    if (r.status === 401) msg.textContent = 'Contraseña incorrecta.';
+                    else if (r.status === 429) {
+                        const w = r.headers.get('Retry-After');
+                        msg.textContent = 'Demasiados intentos. Espera ' + (w || 'unos') + ' segundos.';
+                    } else msg.textContent = 'No se pudo iniciar sesión desde este navegador o servicio.';
+                } catch (e) { msg.textContent = 'No pude conectar con el servidor.'; }
+            });
+
+            // Cerrar sesión NO borra los datos locales (historial, recordatorios, personalidad).
+            logoutBtn.addEventListener('click', async function () {
+                try { await _fetch('/api/auth/logout', { method: 'POST' }); } catch (e) {}
+                showLogin('Sesión cerrada.');
+            });
+
+            // G1: botón separado, con confirmación; borra SOLO estas tres claves de este navegador.
+            wipeBtn.addEventListener('click', function () {
+                if (!window.confirm('¿Borrar de este dispositivo el historial, los recordatorios y la personalidad? '
+                    + 'La memoria del servidor no se toca.')) return;
+                LOCAL_KEYS.forEach(function (k) { try { localStorage.removeItem(k); } catch (e) {} });
+                window.location.reload();
+            });
+
+            // Al abrir: si el servidor exige sesión, se pide la contraseña antes de usar el chat.
+            _fetch('/api/nexus/status').then(function (r) {
+                if (r.status === 401) showLogin(''); else refreshSessionState();
+            }).catch(function () {});
+        })();
     </script>
 </body>
 </html>

@@ -78,6 +78,15 @@ class MemoryEntry:
 # ABSTRACT STORE INTERFACE
 # ============================================================
 
+def _redact_text(text):
+    """Fase 2 (D6): redacta secretos antes de escribir en memoria (nunca falla el guardado)."""
+    try:
+        from backend.security.secrets_filter import redact
+        return redact(text)[0] if isinstance(text, str) else text
+    except Exception:
+        return text
+
+
 class MemoryStore:
     """Interfaz base. Override para cambiar backend."""
 
@@ -130,6 +139,7 @@ class RAMMemoryStore(MemoryStore):
         }
 
     def save(self, entry: MemoryEntry) -> str:
+        entry.content = _redact_text(entry.content)      # Fase 2 (D6): guardado implícito
         self._evict(entry.memory_type)
         self._store[entry.entry_id] = entry
         return entry.entry_id
@@ -252,6 +262,7 @@ class SQLiteMemoryStore(MemoryStore):
         self._conn.commit()
 
     def save(self, entry: MemoryEntry) -> str:
+        entry.content = _redact_text(entry.content)      # Fase 2 (D6): guardado implícito
         self._conn.execute(
             """
             INSERT OR REPLACE INTO memories

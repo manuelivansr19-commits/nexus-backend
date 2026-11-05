@@ -329,6 +329,11 @@ class PersistentMemory:
         t = re.sub(r"\s+", " ", t).strip().strip("\"'«»").strip()
         if not t:
             raise PersistentMemoryError("el texto está vacío")
+        try:                       # Fase 2 (D6): guardado EXPLÍCITO con secreto => se rechaza
+            from backend.security.secrets_filter import SecretDetected, reject_if_secret
+            reject_if_secret(t)
+        except SecretDetected as exc:
+            raise PersistentMemoryError(str(exc)) from exc
         if len(t) > self._max_chars:
             raise PersistentMemoryError(
                 f"el texto es demasiado largo ({len(t)} de {self._max_chars} caracteres)")

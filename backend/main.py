@@ -1,6 +1,6 @@
 """NEXUS Omega -- main.py v3.8.0"""
 from __future__ import annotations
-import time, uuid
+import os, time, uuid
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 import httpx
@@ -38,6 +38,9 @@ from backend.tools.builtin import create_default_registry
 from backend.tools.interfaces import register_future_tools
 from backend.knowledge.engine import KnowledgeEngine
 from backend.knowledge.models import Domain, KnowledgeType, KnowledgeStatus
+from backend.security.access import SecurityMiddleware, build_state
+from backend.security.secrets_filter import set_known_secrets
+from backend.security.settings import SecuritySettings
 
 class HistoryMessage(BaseModel):
     role:    str = Field(..., pattern="^(user|assistant)$")
@@ -167,6 +170,11 @@ async def lifespan(application: FastAPI):
         knowledge_engine=knowledge_engine, task_state=task_state_mgr,
         persistent_memory=persistent_memory)
     logger.info("="*55)
+    logger.info("Seguridad: %s", SECURITY_SETTINGS.startup_summary())
+    if SECURITY_SETTINGS.single_process_ack:
+        logger.info("NEXUS_SINGLE_PROCESS_ACK: declaración del propietario, no verificada por NEXUS.")
+    for _w in SECURITY_SETTINGS.warnings:
+        logger.warning("Seguridad: %s", _w)
     logger.info("NEXUS Omega v%s | Mode: %s | Cloud: %s", APP_VERSION, mode.value,
         "allowed" if ALLOW_CLOUD_INFERENCE else "BLOCKED")
     logger.info("="*55)
@@ -178,9 +186,19 @@ async def lifespan(application: FastAPI):
         except Exception: pass
     logger.info("NEXUS Omega detenido.")
 
+# --- Fase 2: acceso y secretos -------------------------------------------------
+# La configuración se lee y valida UNA vez (sin imprimir ningún valor secreto).
+SECURITY_SETTINGS = SecuritySettings.from_env(os.environ)
+SECURITY_STATE    = build_state(SECURITY_SETTINGS)
+set_known_secrets(ALL_SECRETS)
+
 app = FastAPI(title="NEXUS Omega", version=APP_VERSION, lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
-    allow_methods=["*"], allow_headers=["*"])
+# Orden: el último añadido es el más externo. CORS va fuera para que TAMBIÉN las respuestas
+# 401/403/408/413/429 que genera el middleware de acceso lleven las cabeceras CORS permitidas.
+app.add_middleware(SecurityMiddleware, settings=SECURITY_SETTINGS, state=SECURITY_STATE)
+app.add_middleware(CORSMiddleware, allow_origins=list(SECURITY_SETTINGS.allowed_origins),
+    allow_credentials=False, allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"])
 
 @app.get("/")
 async def home(): return FileResponse("index.html")
@@ -207,8 +225,9 @@ async def health():
 @app.get("/api/nexus/status")
 async def nexus_status():
     mode, cloud = _effective_inference()
+    # boot_id: SEÑAL (no prueba) de que el proceso cambió; solo se ve con permiso read.
     return {"status":"online","system":"NEXUS","version":APP_VERSION,
-            "inference_mode":mode,"cloud_allowed":cloud}
+            "inference_mode":mode,"cloud_allowed":cloud,"boot_id":SECURITY_STATE.boot_id}
 
 @app.get("/api/nexus/config")
 async def nexus_config():

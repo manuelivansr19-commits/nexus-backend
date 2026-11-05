@@ -69,6 +69,13 @@ class KnowledgeEngine:
         allow_duplicate: bool         = False,
     ) -> IngestionResult:
         """Agregar conocimiento al engine."""
+        # Fase 2 (D6): guardado EXPLÍCITO con secreto => se rechaza y no se guarda nada.
+        try:
+            from backend.security.secrets_filter import SecretDetected, reject_if_secret
+            reject_if_secret([title, content, source, source_url, tags or [], metadata or {}])
+        except SecretDetected as exc:
+            from backend.knowledge.ingestion import IngestionResult
+            return IngestionResult(success=False, errors=[str(exc)], action="skipped")
         return self._ingestion.ingest(
             title=title,
             content=content,

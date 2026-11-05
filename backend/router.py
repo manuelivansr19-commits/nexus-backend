@@ -201,6 +201,9 @@ class ModelRouter:
         self._cooldown[name] = (time.monotonic() + secs, reason)
 
     async def generate(self, request: GenerateRequest) -> RouterResult:
+        # Fase 2 (D6): ruta antigua de inferencia; mismo filtro de salida que InferenceLayer.
+        from backend.security.outbound import redact_request
+        request = redact_request(request, "proveedor (router)")
         providers = self.configured_providers
 
         if not providers:

@@ -6,6 +6,7 @@ from backend.inference.errors import AllRuntimesFailed, CloudInferenceBlocked, I
 from backend.inference.models import InferenceMode, InferenceRequest, InferenceResult, RuntimeHealth, RuntimeType
 from backend.inference.policy import InferencePolicy
 from backend.inference.registry import InferenceRegistry
+from backend.security.outbound import redact_request
 
 class InferenceLayer:
     def __init__(self, registry: InferenceRegistry, policy: InferencePolicy):
@@ -17,6 +18,8 @@ class InferenceLayer:
         return self._policy
 
     async def generate(self, request: InferenceRequest) -> InferenceResult:
+        # Fase 2 (D6): punto de control ÚNICO de salida a cualquier runtime, local o de nube.
+        request      = redact_request(request, "runtime de inferencia")
         started      = time.perf_counter()
         all_runtimes = self._registry.all_runtimes()
         try:

@@ -69,6 +69,13 @@ class Executor:
         authorized: bool = False,
     ) -> ExecutionResult:
         """Ejecutar una herramienta por nombre."""
+        # Fase 2 (G5): un secreto en los argumentos RECHAZA la llamada (usuario o planificador).
+        try:
+            from backend.security.secrets_filter import SecretDetected, reject_if_secret
+            reject_if_secret({"params": params, "context": context})
+        except SecretDetected as exc:
+            logger.warning("Executor: llamada a '%s' rechazada: %s", tool_name, ", ".join(exc.families))
+            return ExecutionResult(success=False, tool_name=tool_name, error=str(exc), skipped=True)
         if self._registry is None:
             return ExecutionResult(
                 success=False,

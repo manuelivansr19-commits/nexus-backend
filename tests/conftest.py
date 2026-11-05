@@ -45,6 +45,18 @@ for _name in (
     os.environ.pop(_name, None)
 
 
+# Fase 2: la suite de referencia (605 pruebas) corre con el control de acceso en modo "off"
+# (solo permitido en entorno "test"). Las pruebas de la Fase 2 construyen su propia
+# configuración explícita y no dependen del entorno del equipo.
+for _name in list(os.environ):
+    if _name.startswith("NEXUS_") and _name != "NEXUS_TEST_TMP":
+        os.environ.pop(_name, None)
+os.environ.pop("WEB_CONCURRENCY", None)
+os.environ.pop("UVICORN_WORKERS", None)
+os.environ["NEXUS_ENVIRONMENT"] = "test"
+os.environ["NEXUS_AUTH_MODE"] = "off"
+
+
 def pytest_report_header(config):
     return [
         f"nexus aislamiento: raíz temporal = {_TMP_ROOT}",
